@@ -29,6 +29,7 @@ import { FocusScope } from '@radix-ui/react-focus-scope';
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
   Clock3,
   Loader2,
@@ -65,6 +66,7 @@ import { hasProviderLogo, ProviderLogoMark } from '@/components/icons/ProviderLo
 import { agentOptionOf } from './agentOptions';
 import type { SelectableVendor } from '@/lib/agentVendors';
 import { FastModeToggle } from './FastModeToggle';
+import { EffortSlider } from './EffortSlider';
 import {
   UnifiedModelPanel,
   type UnifiedModelPanelProps,
@@ -4014,6 +4016,16 @@ export function ModelSelector({
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
   const openRef = useRef(false);
+  const [showModelList, setShowModelList] = useState(false);
+  const quickEffortRef = useRef<HTMLDivElement>(null);
+  const modelListRef = useRef<HTMLDivElement>(null);
+  const focusQuickEffort = useCallback(
+    () => quickEffortRef.current?.querySelector<HTMLElement>('[role="slider"]') ?? null,
+    [],
+  );
+  useEffect(() => {
+    if (open && showModelList) modelListRef.current?.querySelector('input')?.focus();
+  }, [open, showModelList]);
   const [keepOpenForAgentConfirmation, setKeepOpenForAgentConfirmation] = useState(false);
   // 打开触发的那次模型发现是否仍在途(并发语义与理由见 useModelDiscoveryPending)。
   const discovery = useModelDiscoveryPending();
@@ -4061,6 +4073,7 @@ export function ModelSelector({
       const nextOpen = disabled ? false : next;
       const wasOpen = openRef.current;
       openRef.current = nextOpen;
+      if (nextOpen && !wasOpen) setShowModelList(false);
       if (nextOpen && !wasOpen && providersOverrideState) {
         providersOverrideState.refresh();
       } else if (nextOpen && !wasOpen && !deviceId && !providersOverride) {
@@ -4483,6 +4496,17 @@ export function ModelSelector({
   // 保留 useMorphPopover 作用域开关(仅 composer 工具条 opt-in;settings/CreateWorker 用 Radix 回退),
   // 但去掉 !isCreateAgentVariant —— 新建对话框工具条也走脱身上浮 morph,与会话内统一(2026-07-22)。
   const morphEnabled = useMorphPopover && !isFieldTrigger;
+  // Only the composer opens on effort. Settings and model-only pickers keep
+  // their existing model list; unavailable sources keep their recovery UI.
+  const showQuickEffort =
+    morphEnabled &&
+    configurationEnabled &&
+    !showModelList &&
+    efforts.length > 1 &&
+    !activeThinkingToggle &&
+    !fallbackOption?.active &&
+    !noSource &&
+    !showSourceDisconnected;
   const budgetGradientStyle: CSSProperties | undefined = isBudget
     ? {
         background: 'var(--model-budget-gradient)',
@@ -4501,7 +4525,7 @@ export function ModelSelector({
       onMouseDown={morphEnabled ? (event) => event.preventDefault() : undefined}
       onClick={morphEnabled ? () => handleOpenChange(!openRef.current) : undefined}
       aria-expanded={open && !disabled}
-      aria-haspopup="listbox"
+      aria-haspopup={showQuickEffort ? 'dialog' : 'listbox'}
       title={triggerTitle}
       className={cn(
         'flex min-w-0 max-w-full items-center gap-1 transition-colors',
@@ -4770,8 +4794,40 @@ export function ModelSelector({
     </button>
   );
 
-  const content = (
-    <>
+  const content = showQuickEffort ? (
+    <div
+      ref={quickEffortRef}
+      role="dialog"
+      aria-label={t('newChat.modelSelector.effortLabel')}
+      className="w-[280px] max-w-[calc(100vw-32px)] p-4"
+    >
+      <div
+        className="text-center text-16 font-medium text-[var(--text-primary)]"
+        aria-live="polite"
+      >
+        {labelOf(efforts.includes(effort) ? effort : efforts[0]!)}
+      </div>
+      <button
+        type="button"
+        disabled={switching || disabled}
+        aria-label={t('newChat.modelSelector.modelListAria')}
+        onClick={() => setShowModelList(true)}
+        className="mx-auto mb-3 mt-1 flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-13 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
+      >
+        <span className="truncate">{displayLabel}</span>
+        <ChevronRight size={14} className="shrink-0" aria-hidden />
+      </button>
+      <EffortSlider
+        stops={efforts}
+        value={effort}
+        recommended={currentModel?.defaultEffort}
+        labelOf={labelOf}
+        onChange={onEffortChange}
+        disabled={switching || disabled}
+      />
+    </div>
+  ) : (
+    <div ref={modelListRef} className="flex min-h-0 flex-col">
       {showSourceDisconnected && onReconnectSource && !deviceId && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border-default)] px-3 py-2" role="status">
           <span className="min-w-0 truncate text-12 text-[var(--text-secondary)]">
@@ -4836,7 +4892,7 @@ export function ModelSelector({
           : undefined
       }
     />
-    </>
+    </div>
   );
 
   if (morphEnabled) {
@@ -4856,6 +4912,8 @@ export function ModelSelector({
         // 宽度只进不退(2026-08-14 实测反馈):rail 筛选把内容变窄时面板宽度回缩,
         // rail 图标在指针底下移位。统一面板主体使用固定高度，仅随窗口可用空间收缩。
         stickyWidth
+        stickyWidthKey={showQuickEffort}
+        autoFocusTarget={focusQuickEffort}
         panelAriaLabel={ariaLabel}
         {...(restoreFocusTarget ? { restoreFocusTarget } : {})}
         trigger={trigger}

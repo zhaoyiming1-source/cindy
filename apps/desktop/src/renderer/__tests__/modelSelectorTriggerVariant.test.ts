@@ -574,6 +574,101 @@ describe('ModelSelector trigger variants', () => {
     });
   };
 
+  it('opens composer effort first and preserves the model list behind its arrow', async () => {
+    const onEffortChange = vi.fn();
+    const onModelChange = vi.fn();
+    render(
+      React.createElement(ModelSelector, {
+        modelId: 'claude-opus-4-8',
+        effort: 'high',
+        vendorKey: 'cc',
+        useMorphPopover: true,
+        onEffortChange,
+        onModelChange,
+      }),
+    );
+    await clickTrigger();
+    const slider = screen.getByRole('slider');
+    expect(slider.getAttribute('aria-valuenow')).toBe('2');
+    expect(slider.getAttribute('aria-valuemax')).toBe('4');
+    expect(screen.queryByRole('option', { name: /Sonnet 4\.6/ })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(slider));
+
+    fireEvent.keyDown(slider, { key: 'End' });
+    expect(onEffortChange).toHaveBeenCalledExactlyOnceWith('max');
+    expect(onModelChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
+    expect(screen.getByRole('option', { name: /Sonnet 4\.6/ })).toBeTruthy();
+    expect(document.activeElement?.tagName).toBe('INPUT');
+    fireEvent.click(screen.getByRole('option', { name: /Sonnet 4\.6/ }));
+    expect(onModelChange).toHaveBeenCalledWith('claude-sonnet-4-6');
+    await clickTrigger();
+    expect(screen.getByRole('slider')).toBeTruthy();
+  });
+
+  it('keeps the effort popup open but disables it during an in-flight change', async () => {
+    const onEffortChange = vi.fn();
+    const props = {
+      modelId: 'claude-opus-4-8',
+      effort: 'high' as Effort,
+      vendorKey: 'cc' as const,
+      useMorphPopover: true,
+      onEffortChange,
+      onModelChange: vi.fn(),
+    };
+    const view = render(React.createElement(ModelSelector, props));
+    await clickTrigger();
+    view.rerender(React.createElement(ModelSelector, { ...props, disabled: true }));
+    const slider = screen.getByRole('slider');
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.keyDown(slider, { key: 'End' });
+    expect(onEffortChange).not.toHaveBeenCalled();
+  });
+
+  it('closes the quick effort popup with Escape and restores the trigger focus', async () => {
+    render(
+      React.createElement(ModelSelector, {
+        modelId: 'claude-opus-4-8',
+        effort: 'high',
+        vendorKey: 'cc',
+        useMorphPopover: true,
+        onEffortChange: vi.fn(),
+        onModelChange: vi.fn(),
+      }),
+    );
+    await clickTrigger();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('slider')));
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('slider')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Current: Opus 4\.8/ }));
+  });
+
+  it.each([
+    { modelId: 'claude-haiku-4-5', configurationEnabled: true, triggerVariant: 'toolbar' as const },
+    { modelId: 'claude-opus-4-8', configurationEnabled: false, triggerVariant: 'toolbar' as const },
+    { modelId: 'claude-opus-4-8', configurationEnabled: true, triggerVariant: 'field' as const },
+  ])(
+    'opens the model list directly when effort is unavailable or outside the composer: %j',
+    async (options) => {
+      render(
+        React.createElement(ModelSelector, {
+          ...options,
+          effort: 'high',
+          vendorKey: 'cc',
+          useMorphPopover: true,
+          onEffortChange: vi.fn(),
+          onModelChange: vi.fn(),
+        }),
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Current:/ }));
+      });
+      expect(screen.queryByRole('slider')).toBeNull();
+      expect(screen.getByRole('option', { name: /Sonnet 4\.6/ })).toBeTruthy();
+    },
+  );
+
   it('remote loading replaces the placeholder and no-results empty state', async () => {
     const originalCapabilities = agentCapabilitiesRef.capabilities;
     const originalModels = visibleModelsRef.models;
@@ -786,6 +881,7 @@ describe('ModelSelector trigger variants', () => {
       act(() => {
         fireEvent.click(screen.getByRole('button', { name: /Current: Opus 4\.8/ }));
       });
+      fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
       await act(async () => {
         await vi.runAllTimersAsync();
       });
@@ -822,6 +918,7 @@ describe('ModelSelector trigger variants', () => {
       act(() => {
         fireEvent.click(screen.getByRole('button', { name: /Current: Opus 4\.8/ }));
       });
+      fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(300);
       });
@@ -833,6 +930,7 @@ describe('ModelSelector trigger variants', () => {
       act(() => {
         fireEvent.click(screen.getByRole('button', { name: /Current: Opus 4\.8/ }));
       });
+      fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
       expect(requestProviderModelsAutoRefresh).toHaveBeenCalledTimes(2);
       expect(screen.queryByText('newChat.modelSelector.discovering')).toBeNull();
 

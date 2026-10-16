@@ -708,6 +708,7 @@ describe('ModelSelector provider groups', () => {
   it('keeps the create-agent secondary panel at the original left/center position with layout coordinates', async () => {
     renderSelector({ visualVariant: 'create-agent', useMorphPopover: true });
     await openDropdown();
+    fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
     await waitForSearchInputFocus();
 
     const modelList = screen.getByRole('listbox', { name: '模型列表' });
@@ -826,6 +827,7 @@ describe('ModelSelector provider groups', () => {
   it('refreshes the create-agent floating anchor after search remounts the active model row', async () => {
     renderSelector({ visualVariant: 'create-agent', useMorphPopover: true });
     await openDropdown();
+    fireEvent.click(screen.getByRole('button', { name: '模型列表' }));
 
     const searchInput = await waitForSearchInputFocus();
 
