@@ -4799,24 +4799,27 @@ export function ModelSelector({
       ref={quickEffortRef}
       role="dialog"
       aria-label={t('newChat.modelSelector.effortLabel')}
-      className="w-[280px] max-w-[calc(100vw-32px)] p-4"
+      className="w-[224px] max-w-[calc(100vw-32px)] px-3 pb-2 pt-2.5"
     >
-      <div
-        className="text-center text-16 font-medium text-[var(--text-primary)]"
-        aria-live="polite"
-      >
-        {labelOf(efforts.includes(effort) ? effort : efforts[0]!)}
+      <div className="mb-1 flex min-w-0 items-center justify-between gap-3">
+        <span
+          className="shrink-0 text-13 font-medium text-[var(--text-primary)]"
+          aria-live="polite"
+        >
+          {labelOf(efforts.includes(effort) ? effort : efforts[0]!)}
+        </span>
+        <button
+          type="button"
+          disabled={switching || disabled}
+          aria-label={t('newChat.modelSelector.modelListAria')}
+          title={displayLabel}
+          onClick={() => setShowModelList(true)}
+          className="flex min-w-0 items-center gap-0.5 rounded-full px-1.5 py-1 text-12 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
+        >
+          <span className="truncate">{displayLabel}</span>
+          <ChevronRight size={12} className="shrink-0" aria-hidden />
+        </button>
       </div>
-      <button
-        type="button"
-        disabled={switching || disabled}
-        aria-label={t('newChat.modelSelector.modelListAria')}
-        onClick={() => setShowModelList(true)}
-        className="mx-auto mb-3 mt-1 flex max-w-full items-center gap-1 rounded-full px-3 py-1 text-13 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50"
-      >
-        <span className="truncate">{displayLabel}</span>
-        <ChevronRight size={14} className="shrink-0" aria-hidden />
-      </button>
       <EffortSlider
         stops={efforts}
         value={effort}
