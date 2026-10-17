@@ -1,3 +1,4 @@
+import { personalBuildDisplayVersion } from './personalBuildDisplayVersion';
 import { registerAccessibilitySupportIpc } from './accessibility-support-ipc.js';
 import { prepareImportedAutomation, finishImportedAutomation } from './bot-import/automationRuntime.js';
 import { ensureImportedAutomationReady, recoverCompanionImports } from './bot-import/host.js';
@@ -236,6 +237,14 @@ interface AppDisplayVersionInfo {
 function getAppDisplayVersionInfo(): AppDisplayVersionInfo {
   const version = app.getVersion();
   if (app.isPackaged) {
+    try {
+      const metadata = JSON.parse(fs.readFileSync(path.join(process.resourcesPath, 'cindy-personal-build.json'), 'utf8'));
+      const source = JSON.parse(fs.readFileSync(path.join(process.resourcesPath, 'cindy-source.json'), 'utf8'));
+      const personal = personalBuildDisplayVersion(version, metadata, source.sourceCommit);
+      if (personal) return personal;
+    } catch {
+      // Official builds and older personal builds keep their existing display.
+    }
     return {
       display: version,
       detail: version,
