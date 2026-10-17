@@ -159,6 +159,40 @@ describe('ProviderGroupSection', () => {
     expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
   });
 
+  // 转分享(provider-sharing.md §4.3)：分享来的电脑的主人是否同意本机分享出去的人经组使用它。
+  it('shows whether the owner of a shared-in computer agreed to the people this computer shares with', async () => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
+    const SHARED = { key: 'share:s1:anthropic', kind: 'share' as const, agentDeviceId: 'share:s1', providerId: 'anthropic', limit: 4, weight: 1, paused: false };
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, SHARED] };
+    const view = viewOf(stored);
+    view.members[1] = {
+      ...view.members[1],
+      state: 'available',
+      ownerName: 'Kai',
+      reshare: {
+        support: 'supported',
+        guests: [
+          { memberId: 'c', displayName: 'Carol', avatarUrl: null, state: 'pending' },
+          { memberId: 'd', displayName: 'Dave', avatarUrl: null, state: 'approved' },
+        ],
+      },
+    };
+    command.mockImplementation(async (cmd: { action: string }) => (cmd.action === 'list' ? { anthropic: stored } : view));
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    const rows = await screen.findAllByTestId('provider-group-member');
+    await waitFor(() => expect(within(rows[1]).getByTestId('provider-group-member-reshare-summary').textContent)
+      .toBe('1 位分享的人等待 Kai 同意'));
+    // 本机这一行不显示。
+    expect(within(rows[0]).queryByTestId('provider-group-member-reshare-summary')).toBeNull();
+    expect(screen.queryByTestId('provider-group-member-reshare')).toBeNull();
+    fireEvent.click(rows[1].querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    const list = within(rows[1]).getByTestId('provider-group-member-reshare');
+    expect(list.textContent).toContain('需要 Kai 逐人同意');
+    const guests = within(list).getAllByTestId('provider-group-member-reshare-guest');
+    expect(guests.map((guest) => guest.textContent)).toEqual(['CCarol等待同意', 'DDave已同意']);
+  });
+
   it('expands a computer to show the quota of its own account', async () => {
     stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
@@ -230,8 +264,8 @@ describe('ProviderGroupSection', () => {
     await screen.findAllByTestId('provider-group-member');
     fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.round' }));
     await waitFor(() => expect(stored?.strategy).toBe('round'));
-    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.usage' }));
-    await waitFor(() => expect(stored?.strategy).toBe('usage'));
+    fireEvent.click(screen.getByRole('radio', { name: 'providerGroup.strategy.order' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
     fireEvent.click(screen.getByRole('switch', { name: 'providerGroup.autoSwitch.label' }));
     await waitFor(() => expect(stored?.autoSwitch).toBe(false));
   });
@@ -245,24 +279,41 @@ describe('ProviderGroupSection', () => {
     expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ confirmVariant: 'destructive' }));
   });
 
-  it('shows the actual Chinese usage-balancing option and saves it for a disconnected subscription', async () => {
+  it('explains in Chinese that quota comes first for a disconnected subscription and shows an old usage group as least busy', async () => {
     realLocale = createInstance();
     await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
     providerState.providers[0].connected = false;
-    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
+    stored = { strategy: 'usage', autoSwitch: true, members: [LOCAL] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Claude" />);
-    const option = await screen.findByRole('radio', { name: '用量均衡' });
-    fireEvent.click(option);
-    await waitFor(() => expect(stored?.strategy).toBe('usage'));
-    expect(await screen.findByText('按5小时和每周用量分配')).toBeTruthy();
+    expect(await screen.findByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '最少占用' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('给最闲的那台')).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: '按顺序' }));
+    await waitFor(() => expect(stored?.strategy).toBe('order'));
   });
 
-  it('does not offer subscription balancing for an API key connection', async () => {
+  it.each([
+    { kind: 'API-only', members: [LOCAL] },
+    { kind: 'mixed local API and remote subscription', members: [LOCAL, MINI] },
+  ])('explains when quota overrides the strategy for a $kind group', async ({ members }) => {
+    realLocale = createInstance();
+    await realLocale.init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zhCN } }, interpolation: { escapeValue: false } });
     providerState.providers[0].auth.method = 'api-key';
+    // Group views do not expose remote authentication types; the local connection cannot gate this explanation.
+    stored = { strategy: 'order', autoSwitch: true, members };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    await screen.findAllByTestId('provider-group-member');
+    expect(screen.getByText('能读取 Claude 订阅用量时，先用配额快重置的电脑，再选用量低的，相近时按组策略')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: '按顺序' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('radio', { name: '用量均衡' })).toBeNull();
+  });
+
+  it('shows the quota hint for a subscription group', async () => {
     stored = { strategy: 'least', autoSwitch: true, members: [LOCAL] };
     render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
     await screen.findAllByTestId('provider-group-member');
-    expect(screen.queryByRole('radio', { name: 'providerGroup.strategy.usage' })).toBeNull();
+    expect(screen.getByText('providerGroup.strategy.quotaFirst')).toBeTruthy();
   });
 });
 

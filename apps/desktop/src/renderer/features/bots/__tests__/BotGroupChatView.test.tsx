@@ -302,7 +302,7 @@ beforeEach(() => {
       cleanupCachedImages: vi.fn(async () => undefined),
       getFileThumbnail: vi.fn(async () => null),
       maker: {
-        chatServer: { thread: mocks.thread },
+        chatServer: { thread: mocks.thread, reactors: vi.fn(async () => ({ ok: true, reactors: [] })) },
         listBotGroups: vi.fn(async () => ({ ok: true, groups: [] })),
         getBotGroup: (...args: unknown[]) => mocks.getBotGroup(...args),
         sendBotGroupMessage: (...args: unknown[]) => mocks.sendBotGroupMessage(...args),
@@ -327,6 +327,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('BotGroupChatView', () => {
+  it('keeps archived history readable and restores the composer only after the group is unarchived', async () => {
+    const archived = detail({ serverBacked: true, archived: true,
+      messages: [msg({ content: 'Preserved group history' })],
+    });
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: archived });
+    renderView();
+    await screen.findByText('Preserved group history');
+    expect(screen.getByText('bots.groupChat.server.settings.archived')).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    mocks.getBotGroup.mockResolvedValue({ ok: true, group: { ...archived, archived: false } });
+    act(() => { mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'updated' })); });
+    await screen.findByRole('textbox');
+    expect(screen.getByText('Preserved group history')).toBeTruthy();
+    expect(screen.queryByText('bots.groupChat.server.settings.archived')).toBeNull();
+  });
+
   function mockThreadMotion(duration: string) {
     const style = document.createElement('style');
     style.textContent = `aside { --motion-base: ${duration}; --motion-ease-move: linear; }`;
@@ -683,6 +699,73 @@ describe('BotGroupChatView', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('button', { name: '🎉' })).toBeNull();
     expect(screen.getByRole('complementary')).toBe(panel);
+  });
+
+  it('updates an attachment on an earlier page when its download finishes', async () => {
+    let arrived = false;
+    const latest = msg({ id: 'latest', sequence: 300, content: 'Latest question' });
+    const older = () => msg({ id: 'older', sequence: 4, content: 'Earlier picture', attachments: [arrived
+      ? { id: 'old', name: 'old.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/old.png', path: null }
+      : { id: 'old', name: 'old.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' }] });
+    mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => ({ ok: true, group: options?.beforeSequence
+      ? detail({ messages: [older()], hasMoreBefore: false })
+      : detail({ messages: [latest], hasMoreBefore: true }) }));
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('chat.imageMissing.loading')).toBeTruthy();
+    arrived = true;
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    expect(await screen.findByAltText('old.png')).toBeTruthy();
+    expect(screen.queryByText('chat.imageMissing.loading')).toBeNull();
+    expect(mocks.getBotGroup.mock.calls.map(([, options]) => (options as { beforeSequence?: number } | undefined)?.beforeSequence))
+      .toEqual([undefined, 300, undefined, 5]);
+  });
+
+  it('retries an attachment that failed on an earlier page when a later change arrives', async () => {
+    let attempt: 'failed' | 'ready' = 'failed';
+    const older = () => msg({ id: 'older', sequence: 4, content: 'Earlier picture', attachments: [attempt === 'ready'
+      ? { id: 'old', name: 'old.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/old.png', path: null }
+      : { id: 'old', name: 'old.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' }] });
+    mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => ({ ok: true, group: options?.beforeSequence
+      ? detail({ messages: [older()], hasMoreBefore: false })
+      : detail({ messages: [msg({ id: 'latest', sequence: 300, content: 'Latest question' })], hasMoreBefore: true }) }));
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+    expect(await screen.findByText('chat.imageMissing.unavailable')).toBeTruthy();
+    // Main's backoff is over and the retried download succeeded; any later change re-reads that page.
+    attempt = 'ready';
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    expect(await screen.findByAltText('old.png')).toBeTruthy();
+    expect(screen.queryByText('chat.imageMissing.unavailable')).toBeNull();
+  });
+
+  it('updates loading attachments on six separate earlier pages after a single change push', async () => {
+    let arrived = false;
+    const olderSequences = [600, 500, 400, 300, 200, 100];
+    const older = (sequence: number) => msg({ id: `older-${sequence}`, sequence, content: `Earlier ${sequence}`, attachments: [arrived
+      ? { id: `a${sequence}`, name: `a${sequence}.png`, category: 'image', mimeType: 'image/png', size: 1, url: `cindy-media://blobs/a${sequence}.png`, path: null }
+      : { id: `a${sequence}`, name: `a${sequence}.png`, category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' }] });
+    // "Load earlier" asks before the oldest shown message; a refresh asks before a loading one (+1).
+    mocks.getBotGroup.mockImplementation(async (_id: string, options?: { beforeSequence?: number }) => {
+      const before = options?.beforeSequence;
+      if (!before) return { ok: true, group: detail({ messages: [msg({ id: 'latest', sequence: 700, content: 'Latest question' })], hasMoreBefore: true }) };
+      const sequence = before % 100 === 1 ? before - 1 : before - 100;
+      return { ok: true, group: detail({ messages: [older(sequence)], hasMoreBefore: sequence > 100 }) };
+    });
+    renderView();
+    for (const sequence of olderSequences) {
+      fireEvent.click(await screen.findByRole('button', { name: 'bots.groupChat.timeline.loadEarlier' }));
+      await screen.findByText(`Earlier ${sequence}`);
+    }
+    expect(screen.getAllByText('chat.imageMissing.loading')).toHaveLength(6);
+    arrived = true;
+    // One coalesced push for all six downloads, and nothing after it.
+    await act(async () => mocks.pushes.forEach(push => push({ groupId: 'g1', change: 'messages' })));
+    for (const sequence of olderSequences) expect(await screen.findByAltText(`a${sequence}.png`)).toBeTruthy();
+    expect(screen.queryByText('chat.imageMissing.loading')).toBeNull();
+    const refreshReads = mocks.getBotGroup.mock.calls.map(([, options]) => (options as { beforeSequence?: number } | undefined)?.beforeSequence)
+      .filter((before): before is number => before !== undefined && before % 100 === 1);
+    expect(refreshReads).toEqual([601, 501, 401, 301, 201, 101]);
   });
 
   it('keeps a newer push failure snapshot when a stale older-page request finishes later', async () => {
@@ -2082,6 +2165,48 @@ describe('BotGroupChatView', () => {
 
       const withText = screen.getByAltText('草图.png').closest('article')!;
       expect(withText.querySelector('.whitespace-pre-wrap')?.textContent).toBe('再看这张');
+    });
+
+    it('keeps a server attachment in place while it loads or fails, beside the sender’s own text and someone else’s', async () => {
+      mocks.getBotGroup.mockResolvedValue({
+        ok: true,
+        group: detail({
+          messages: [
+            msg({
+              id: 'u11',
+              content: '这个Thread的问题很大...',
+              isSelf: true,
+              attachments: [
+                { id: 'p1', name: 'clipboard-1791878467493.png', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'loading' },
+                { id: 'p2', name: 'spec.pdf', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+              ],
+            }),
+            msg({
+              id: 'h1',
+              sequence: 2,
+              authorKind: 'user',
+              isSelf: false,
+              authorName: 'chris',
+              content: '',
+              attachments: [
+                { id: 'p3', name: 'photo.png', category: 'image', mimeType: 'image/png', size: 1, url: 'cindy-media://blobs/photo.png', path: null },
+                { id: 'p4', name: '', category: 'file', mimeType: '', size: 0, url: null, path: null, state: 'unavailable' },
+              ],
+            }),
+          ],
+        }),
+      });
+      renderView();
+      const own = (await screen.findByText('这个Thread的问题很大...')).closest('article')!;
+      expect(within(own).getByText('chat.imageMissing.loading')).toBeTruthy();
+      expect(within(own).getByText('clipboard-1791878467493.png')).toBeTruthy();
+      expect(within(own).getByRole('status', { name: 'spec.pdf, bots.groupChat.files.unavailable' })).toBeTruthy();
+      expect(within(own).getByTestId('bot-group-message-attachments').className).toContain('items-end');
+      const other = screen.getByAltText('photo.png').closest('article')!;
+      expect(within(other).getByTestId('bot-group-message-attachments').className).toContain('items-start');
+      // A media reference without a caption still says something was attached.
+      expect(within(other).getByRole('status', { name: 'bots.groupChat.files.untitled, bots.groupChat.files.unavailable' })).toBeTruthy();
+      expect(document.body.textContent).not.toContain('[附件:');
     });
   });
 });
