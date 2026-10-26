@@ -20,6 +20,7 @@
  * values — fixing the "progress bounces to 0" regression at the caller layer.
  */
 
+import { PersonalUpdater, locatePersonalUpdater } from './personalUpdater';
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -88,6 +89,7 @@ import {
 } from './windowsUpdaterPrerequisites';
 
 const log = createLogger('updateService');
+let personalUpdater: PersonalUpdater | undefined;
 let cancelStartupBinaryUpdateCheck: (() => void) | undefined;
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -107,6 +109,10 @@ interface UpdateStatusPayload {
   version?: string;
   progress?: number;
   errorCode?: string;
+  latestVersion?: string;
+  generation?: string;
+  preparationError?: boolean;
+  discoveryError?: boolean;
 }
 
 interface PatchInfo {
@@ -356,6 +362,7 @@ async function getAutoRelaunchBlockReasonForCurrentState(): Promise<AutoRelaunch
   if (isDev()) return 'dev';
   if (currentStatus !== 'ready') return 'not-ready';
   if (lastErrorCode === WINDOWS_UPDATER_RUNTIME_MISSING_ERROR_CODE) return 'not-ready';
+  if (personalUpdater) return 'disabled';
   if (isRelaunching || autoRelaunchInProgress) return 'relaunching';
   const hasBusyTasksNow = await hasBusyTasks();
 
@@ -404,6 +411,7 @@ async function getStartupRelaunchBlockReason(): Promise<AutoRelaunchBlockReason 
   if (isDev()) return 'dev';
   if (currentStatus !== 'ready') return 'not-ready';
   if (lastErrorCode === WINDOWS_UPDATER_RUNTIME_MISSING_ERROR_CODE) return 'not-ready';
+  if (personalUpdater) return 'disabled';
   if (isRelaunching || autoRelaunchInProgress) return 'relaunching';
   // pkexec 必须用户在场输入密码，启动时不能自己装。
   if (process.platform === 'linux') return 'interactive-auth';
@@ -1117,6 +1125,7 @@ export function isVersionlessAppVersion(version: string): boolean {
 }
 
 async function doCheckForUpdate(manifestOverride?: Manifest | null): Promise<CheckForUpdateResult> {
+  if (personalUpdater) { personalUpdater.check(); return personalUpdater.snapshot().status === 'ready' ? 'ready' : 'idle'; }
   if (isCindyPersonalRuntime()) return 'idle';
   log.info('checkForUpdate() called, currentStatus=%s', currentStatus);
   // 先跟共享设置对一次有效渠道:共库另一实例改过开关时,本进程内存代际还停在旧值。
@@ -1909,6 +1918,7 @@ interface RelaunchOptions {
 }
 
 async function executeRelaunch(theme: 'light' | 'dark', options?: RelaunchOptions): Promise<void> {
+  if (personalUpdater) { await personalUpdater.relaunch(); return; }
   if (isCindyPersonalRuntime()) return;
   try {
     await executeRelaunchUnguarded(theme, options);
@@ -2295,6 +2305,22 @@ export function setAutoRelaunchOnIdleForAgent(enabled: boolean): boolean {
 }
 
 export function initUpdateService(): void {
+  const local = !isCindyPersonalRuntime() && typeof process.resourcesPath === 'string' ? locatePersonalUpdater({
+    resources: process.resourcesPath,
+    appPath: path.dirname(path.dirname(process.resourcesPath)),
+    runtimeVersion: app.getVersion(), platform: process.platform,
+    packaged: app.isPackaged, development: isDev(),
+    emit: broadcastStatus, quit: () => app.quit(), warn: (message) => log.warn(message),
+  }) : null;
+  if (local) {
+    personalUpdater = new PersonalUpdater({
+      resources: process.resourcesPath, appPath: path.dirname(path.dirname(process.resourcesPath)),
+      runtimeVersion: app.getVersion(), platform: process.platform,
+      packaged: app.isPackaged, development: isDev(), emit: broadcastStatus,
+      quit: () => { noteExpectedExit('update-relaunch'); app.quit(); }, warn: (message) => log.warn(message),
+    }, local.root);
+  }
+
   // Observe the successful old-updater receipt before existing cleanup removes
   // it. Async and metadata-only; no effect on download/apply/rollback decisions.
   if (process.platform === 'win32' && app.isPackaged && !isDev() && !isCindyPersonalRuntime()) {
@@ -2349,7 +2375,7 @@ export function initUpdateService(): void {
   );
 
   ipcMain.handle('update-get-status', () => {
-    return { status: currentStatus, version: readyVersion, errorCode: lastErrorCode };
+    return personalUpdater?.snapshot() ?? { status: currentStatus, version: readyVersion, errorCode: lastErrorCode };
   });
 
   ipcMain.handle('update-auto-settings-get', () => {
@@ -2503,7 +2529,15 @@ export function initUpdateService(): void {
     }
   });
 
-  ipcMain.handle('update-check-now', async (): Promise<{ result: CheckForUpdateResult | 'downloading' }> => {
+  ipcMain.handle('update-check-now', async (event): Promise<{ result: CheckForUpdateResult | 'downloading' }> => {
+    if (personalUpdater) {
+      assertTrustedAppRendererEvent(event);
+      const state = await personalUpdater.checkNow();
+      const result: CheckForUpdateResult | 'downloading' = state.status === 'ready' ? 'ready'
+        : state.discoveryError || state.status === 'error' ? 'manifest_failed'
+        : state.status === 'idle' ? 'idle' : 'downloading';
+      return { result };
+    }
     // Short-circuit when a check / download is already in flight or finished:
     // we don't want the user to wait for an entire download just to see the
     // toast, and re-entering checkForUpdate() during 'downloading' would
@@ -2521,7 +2555,7 @@ export function initUpdateService(): void {
     log.info('update-check-startup called');
     startupUpdateCheckInProgress = true;
     try {
-      if (isDev() || isCindyPersonalRuntime()) {
+      if (personalUpdater || isDev() || isCindyPersonalRuntime()) {
         return { hasUpdate: false, action: 'none' as const };
       }
 
@@ -2665,6 +2699,7 @@ export function initUpdateService(): void {
     }
   });
 
+  if (personalUpdater) { personalUpdater.start(); return; }
   if (isDev() || isCindyPersonalRuntime()) {
     log.info('Dev mode — skipping background polling');
     return;
@@ -2731,6 +2766,8 @@ export async function enableUncustomizedBetaChannel(
 }
 
 export function stopUpdateService(): void {
+  personalUpdater?.stop();
+  personalUpdater = undefined;
   if (firstCheckTimer) {
     clearTimeout(firstCheckTimer);
     firstCheckTimer = null;

@@ -7320,6 +7320,10 @@
   },
   "credentialStore": {
     "banner": {
+      "personalPreparationFailed": "Version {{latestVersion}} could not be prepared. You can still install the ready version {{version}}.",
+      "personalFailureTitle": "Update could not be completed",
+      "personalFailureDescription": "The current app and prepared update have been kept. Try again; if it still fails, check the personal updater status.",
+      "personalRetry": "Retry",
       "message": "System credential storage is unavailable; your signed-in state cannot be maintained",
       "viewHelp": "View solutions",
       "dismiss": "Dismiss"

@@ -7292,6 +7292,10 @@
   },
   "credentialStore": {
     "banner": {
+      "personalPreparationFailed": "バージョン {{latestVersion}} の準備に失敗しました。準備済みの {{version}} は引き続きインストールできます。",
+      "personalFailureTitle": "更新を完了できませんでした",
+      "personalFailureDescription": "現在のアプリと準備済みの更新は保持されています。再試行してください。失敗が続く場合は個人版の更新状態を確認してください。",
+      "personalRetry": "再試行",
       "message": "システムの資格情報ストレージが利用できないため、ログイン状態を維持できません",
       "viewHelp": "解決方法を見る",
       "dismiss": "閉じる"

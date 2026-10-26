@@ -946,6 +946,9 @@ interface UpdateStatusPayload {
    */
   status: 'idle' | 'checking' | 'downloading' | 'ready' | 'superseding' | 'error';
   version?: string;
+  latestVersion?: string;
+  preparationError?: boolean;
+  discoveryError?: boolean;
   progress?: number;
   /** Machine-readable error subtype. `windows_vc_runtime_missing` keeps a
    *  staged patch ready while the renderer prompts for the updater's x64
@@ -3845,7 +3848,7 @@ interface ElectronAPI {
   /** Register an update-status subscriber. Returns an unsubscribe function. */
   onUpdateStatus: (callback: (payload: UpdateStatusPayload) => void) => () => void;
   /** Query current update status (no network, returns in-memory state). */
-  getUpdateStatus: () => Promise<{ status: string; version?: string; errorCode?: string }>;
+  getUpdateStatus: () => Promise<UpdateStatusPayload>;
   /** Query and update auto-apply settings for downloaded app updates. */
   getAutoUpdateSettings: () => Promise<AutoUpdateSettingsPayload>;
   setAutoUpdateSettings: (settings: {

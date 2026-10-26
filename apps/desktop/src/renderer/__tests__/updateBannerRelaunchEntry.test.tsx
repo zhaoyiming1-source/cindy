@@ -28,6 +28,8 @@ const {
       status: string;
       version?: string;
       errorCode: string | null;
+      preparationError?: boolean;
+      latestVersion?: string;
     },
   },
   // dismissed 必须可控且由 dismiss() 真正翻转:要测「confirming 残留到下次唤回」,就得能
@@ -369,5 +371,16 @@ describe('UpdateBanner relaunch entry', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(relaunchToUpdate).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('personal update fallback', () => {
+  it('keeps the ready action and states that preparing the newer release failed', () => {
+    updateStatus.current = { status: 'ready', version: '0.1.112', errorCode: null,
+      preparationError: true, latestVersion: '0.1.115' };
+    render(<UpdateBanner isCollapsed={false} />);
+    expect(screen.getByText('update.banner.personalPreparationFailed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'update.banner.ariaExpanded' })).toBeTruthy();
   });
 });

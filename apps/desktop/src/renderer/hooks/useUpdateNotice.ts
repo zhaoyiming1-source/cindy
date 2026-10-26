@@ -41,6 +41,12 @@ const PREVIEW_INDEX_BUDGET_MS = 3000;
  */
 const AUTO_NOTICE_RETRY_DELAY_MS = 2000;
 
+/** Release notes use the verified official baseline, not the local runtime's 0.0.0. */
+export function releaseNotesAppVersion(runtime: string, display?: string): string {
+  const personal = /^(\d+\.\d+\.\d+)-personal$/.exec(display ?? '');
+  return runtime === '0.0.0' && personal ? personal[1] : runtime;
+}
+
 /** Numeric semver comparison. Returns >0 if a > b, <0 if a < b, 0 if equal. */
 function cmpVersion(a: string, b: string): number {
   const pa = a.split('.').map(Number);
@@ -273,7 +279,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
   );
 
   useEffect(() => {
-    const appVersion = window.electronAPI.appVersion;
+    const appVersion = releaseNotesAppVersion(window.electronAPI.appVersion, window.electronAPI.appDisplayVersion);
     let lastRead: string | null = null;
     try {
       lastRead = localStorage.getItem(STORAGE_KEY);
@@ -410,7 +416,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
     // before this async IIFE has called setOpen/setMode.
     autoNoticeSuppressedRef.current = true;
     dialogOpenedRef.current = true;
-    const appVersion = window.electronAPI.appVersion;
+    const appVersion = releaseNotesAppVersion(window.electronAPI.appVersion, window.electronAPI.appDisplayVersion);
 
     (async () => {
       // Fetch index + appVersion's notes in parallel. The index is what the
@@ -481,7 +487,7 @@ export function useUpdateNotice(): UseUpdateNoticeReturn {
     }
     autoNoticeSuppressedRef.current = true;
     dialogOpenedRef.current = true;
-    const appVersion = window.electronAPI.appVersion;
+    const appVersion = releaseNotesAppVersion(window.electronAPI.appVersion, window.electronAPI.appDisplayVersion);
 
     (async () => {
       // Kick off the pending version's notes immediately — it is the one block

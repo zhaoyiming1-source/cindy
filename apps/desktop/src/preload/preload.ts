@@ -2648,7 +2648,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     version?: string;
     error?: 'manifest_failed' | 'download_failed';
   }> => Promise.resolve({ hasUpdate: false, action: 'none' }),
-  getUpdateStatus: (): Promise<{ status: string; version?: string; errorCode?: string }> =>
+  getUpdateStatus: (): Promise<{ status: string; version?: string; errorCode?: string; latestVersion?: string; preparationError?: boolean; discoveryError?: boolean }> =>
     ipcRenderer.invoke('update-get-status'),
   getAutoUpdateSettings: (): Promise<{
     autoRelaunchOnIdle: boolean;

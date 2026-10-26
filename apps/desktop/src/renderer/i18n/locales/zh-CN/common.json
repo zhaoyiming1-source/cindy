@@ -7292,6 +7292,10 @@
   },
   "credentialStore": {
     "banner": {
+      "personalPreparationFailed": "较新版本 {{latestVersion}} 准备失败，仍可安装已准备好的 {{version}}。",
+      "personalFailureTitle": "更新暂时无法完成",
+      "personalFailureDescription": "当前应用和待安装包已保留。请重试；如果仍然失败，请查看个人版更新状态。",
+      "personalRetry": "重试",
       "message": "系统凭证存储不可用，登录状态无法维持",
       "viewHelp": "查看解决方法",
       "dismiss": "关闭提示"

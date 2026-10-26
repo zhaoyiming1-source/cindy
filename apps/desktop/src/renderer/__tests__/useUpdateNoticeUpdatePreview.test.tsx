@@ -14,7 +14,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useUpdateNotice } from '@/hooks/useUpdateNotice';
+import { useUpdateNotice, releaseNotesAppVersion } from '@/hooks/useUpdateNotice';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -403,4 +403,11 @@ describe('useUpdateNotice automatic popup', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('1.4.2');
     expect(mocks.fetchReleaseNotes).toHaveBeenCalledTimes(2);
   });
+});
+
+
+it('uses the verified personal baseline for release-note ranges', () => {
+  expect(releaseNotesAppVersion('0.0.0', '0.1.115-personal')).toBe('0.1.115');
+  expect(releaseNotesAppVersion('1.2.3', '9.9.9-personal')).toBe('1.2.3');
+  expect(releaseNotesAppVersion('0.0.0', 'invalid')).toBe('0.0.0');
 });

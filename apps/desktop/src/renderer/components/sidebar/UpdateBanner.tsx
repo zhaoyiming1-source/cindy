@@ -75,7 +75,7 @@ const UPDATE_BUTTON_TREATMENT =
   '[--button-face-bg:var(--update-btn-bg)] [--button-face-border:var(--update-btn-border)] text-[var(--update-btn-text)] enabled:hover:[--button-face-bg:var(--update-btn-hover)] enabled:hover:[--button-face-border:var(--update-btn-border)] enabled:active:[--button-face-bg:var(--update-btn-hover)] enabled:active:[--button-face-border:var(--update-btn-border)]';
 
 export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerProps) {
-  const { status, version, errorCode } = useUpdateStatus();
+  const { status, version, errorCode, preparationError, latestVersion } = useUpdateStatus();
   const { effectiveLocale } = useLocale();
   // 用户主动关闭态(仅本次进程内存,由 UserInfoSection 的火焰按钮唤回)。
   // 新一版更新到达时 useDeferUpdateBannerWhileBusy 会清掉上一版的决定并重新探针。
@@ -122,7 +122,10 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // Show the translocated fallback dialog when the main process reports
   // the app is running from a read-only App Translocation path.
   const isTranslocated = status === 'error' && errorCode === 'translocated';
+  const isPersonalFailure = status === 'error' && Boolean(errorCode?.startsWith('personal_'));
   const isSpawnFailed = status === 'error' && errorCode === 'updater_spawn_failed';
+  const [showPersonalFailure, setShowPersonalFailure] = useState(false);
+  useEffect(() => { if (isPersonalFailure) setShowPersonalFailure(true); }, [isPersonalFailure]);
   const isWindowsRuntimeMissing =
     status === 'ready' && errorCode === 'windows_vc_runtime_missing';
   const isLinuxInstallationUnsupported =
@@ -335,8 +338,16 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
 
   const withPrerequisiteDialogs = (content: ReactNode) => (
     <>
+      <ConfirmDialog
+        open={showPersonalFailure}
+        onOpenChange={setShowPersonalFailure}
+        title={t('update.banner.personalFailureTitle')}
+        description={t('update.banner.personalFailureDescription')}
+        confirmText={t('update.banner.personalRetry')}
+        onConfirm={() => { setShowPersonalFailure(false); void window.electronAPI.checkForUpdate(); }}
+      />
       {isLinuxInstallationUnsupported && (
-        <ConfirmDialog
+      <ConfirmDialog
           open={showLinuxInstallationDialog}
           onOpenChange={handleLinuxDialogOpenChange}
           title={t('update.linuxInstallation.title')}
@@ -377,6 +388,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // Banner is visible for ready (relaunch available), superseding (preparing
   // a newer version on top of an already-ready patch), or error fallback
   // dialogs. Everything else hides the banner.
+  if (isPersonalFailure) return withPrerequisiteDialogs(null);
   if (status !== 'ready' && !isPreparing && !isTranslocated && !isSpawnFailed) return null;
 
   if (isErrorOnly) {
@@ -547,6 +559,11 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
                 ? t('update.banner.confirmBusyHint')
                 : t('update.banner.subtitle')}
           </p>
+          {preparationError && !isPreparing && !confirming && (
+            <p className="text-center text-xs text-sidebar-muted" role="status">
+              {t('update.banner.personalPreparationFailed', { latestVersion, version })}
+            </p>
+          )}
           {notesVersion && (
             <button
               onClick={() => onOpenVersionNotice?.(notesVersion)}
