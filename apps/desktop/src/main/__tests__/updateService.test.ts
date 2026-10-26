@@ -2679,3 +2679,40 @@ describe('splash 启动下载 0% 显式广播', () => {
   });
 });
 });
+
+it('routes managed personal builds to the local backend without official polling or idle restart', async () => {
+  const resources = path.join(TEST_ROOT, 'managed', 'Cindy.app', 'Contents', 'Resources');
+  const controllerRoot = path.join(TEST_ROOT, 'local-controller');
+  fs.mkdirSync(resources, { recursive: true });
+  fs.mkdirSync(path.join(controllerRoot, 'automation'), { recursive: true });
+  fs.writeFileSync(path.join(controllerRoot, 'automation', 'controller.py'), '# fixture');
+  const sha = 'a'.repeat(40);
+  fs.writeFileSync(path.join(resources, 'cindy-source.json'), JSON.stringify({ sourceCommit: sha }));
+  fs.writeFileSync(path.join(resources, 'cindy-personal-build.json'), JSON.stringify({
+    schemaVersion: 1, managedBy: 'local-release-follower', sourceCommit: sha, upstreamVersion: '0.1.115',
+    updater: { protocolVersion: 1, root: controllerRoot },
+  }));
+  fs.writeFileSync(path.join(controllerRoot, 'config.json'), JSON.stringify({ region: 'cn', bundleId: 'com.xd.cindycn',
+    installTarget: path.dirname(path.dirname(resources)) }));
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+  Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true });
+  const service = await freshUpdateService('darwin');
+  appGetVersion.mockReturnValue('0.0.0');
+  const { PersonalUpdater } = await import('../personalUpdater');
+  const start = vi.spyOn(PersonalUpdater.prototype, 'start').mockImplementation(() => undefined);
+  try {
+    service.initUpdateService();
+    expect(start).toHaveBeenCalledOnce();
+    await service.checkForUpdate();
+    ipcListeners.get('update-relaunch')?.({}, 'dark');
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(fetchManifest).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+    expect(powerMonitorOn).not.toHaveBeenCalled();
+    expect(appQuit).not.toHaveBeenCalled();
+  } finally {
+    start.mockRestore(); service.stopUpdateService();
+    if (descriptor) Object.defineProperty(process, 'resourcesPath', descriptor);
+    else Reflect.deleteProperty(process, 'resourcesPath');
+  }
+});
