@@ -61,6 +61,37 @@ if (capabilities.operations.includes('models')) {
 连接存在不等于远端凭证、配额和请求一定成功。保存、创建、发送／改模仍分别验证，错误应显示给用户，
 允许恢复连接或明确改选同一任务的模型；不得自动改成另一型号、另一个账号或清掉历史后重建。
 
+持续复用任务的插件若要在新输入前同步插件当前保存的模型设置，必须同时确认
+`capabilities.operations.includes('setModel')` 和 `capabilities.pluginDefaultModel === true`，
+再调用 `setModel({taskId, expectedRevision, route: 'plugin-default'})`。仅存在 `setModel`
+operation 不代表支持这个特殊 route；它只适用于 `setModel`，不能传给 `create`。
+
+```js
+let currentTask = await cindy.tasks.get({ taskId });
+if (capabilities.operations.includes('setModel') && capabilities.pluginDefaultModel === true) {
+  const result = await cindy.tasks.setModel({
+    taskId, expectedRevision: currentTask.revision, route: 'plugin-default',
+  });
+  currentTask = result.task;
+}
+// 仅用于尚未发送的新输入；之前已接受或结果不确定的输入须先恢复其原回执。
+const nextRun = await cindy.tasks.send({
+  taskId, expectedRevision: currentTask.revision, requestKey: nextRequestKey, text: nextText,
+});
+```
+
+Host 每次调用都重新读取本插件的模型设置，复用创建任务的模型解析规则；没有完整插件覆盖时
+可继承当前新任务选择。只同步模型、Agent、供应商、推理强度和 Fast，不修改权限、工作目录
+或任务历史。返回 `{status, task}`；组合相同返回 `unchanged`，不重复切换运行时。
+后续 `send.expectedRevision` 使用返回的 `task.revision`，不能继续使用切换前的 revision。
+
+解析或运行时写入前若任务 revision、插件模型偏好或所继承的新任务默认组合变化，会返回
+`STALE_REVISION`。调用方应重新 `get` 获取最新任务 revision，再重试同一次模型同步，成功后
+才发送新输入；不得沿用过期 route。该重试不授权重发已经接受或结果不确定的旧输入，旧输入
+仍按原 requestKey／run 回执恢复。不可用模型等其他错误应按原因处理，不静默换模型。
+旧 Host 未声明 `pluginDefaultModel: true` 时不发送该特殊 route，保留任务已有模型和原有发送
+流程；显式 `selected.route` 的调用契约不变。
+
 `setModel` 返回 `deferred` 时，当前执行仍按原模型完成，下一条输入才应用新组合。
 任务 `resolvedConfig` 与 revision 表示宿主已接受的下一条输入配置；在切换实际生效前后保持
 一致，避免先用旧模型登记发送回执、再因新模型生效而拒绝首条续发。读取历史不受切模影响。
@@ -82,6 +113,11 @@ if (capabilities.operations.includes('models')) {
 2026-10-01 确认的默认行为：新建任务沿用发起任务的模型；从面板直接新建时使用当前
 新任务选择；用户可为插件单独覆盖。模型、Agent、供应商、推理强度和 Fast 作为完整组合
 解析，绝不从另一 Agent 的历史草稿拼出一组值。权限独立设置，不随模型来源继承。
+
+插件可在 `ghost.json` 顶层声明 `showTaskPreferences: false`，隐藏 Desktop 和手机上的
+宿主「模型与任务」默认配置卡，并在自己的设置界面提供配置。省略或设为 `true` 保持原有显示条件。
+此字段仅控制卡片显示；以下任务 API、模型优先级、已有默认配置和权限检查全部保持原样。
+旧客户端不识别该字段时仍显示原卡片。
 
 | 入口 | 模型来源与复用 | 权限与结果 |
 | --- | --- | --- |
@@ -297,3 +333,50 @@ Pi 子代理未成功投递的自动 allow 再次投递前重走现有核验，�
 `auto-review-context.test.ts`、Pi/Claude Code 审批接线回归以及 `eval-auto-approval.mts` 的
 `delegated-*` 正反对照（后者需要真实审阅模型，当前拆分 PR 未运行付费验证）。主机身份校验是确定性边界，动作与任务是否相符仍由 Auto 审阅，
 不宣称题目目录是系统沙箱。
+
+## 通用投递目标（增量接口，尚未发布）
+
+`cindy.targets` 的作者契约见 `FORGE_GUIDE`，实现位于 `pluginTargetSlot.ts` 和
+`pluginTargetCandidates.ts`。查询、解析和投递相互独立，没有宿主目标选择弹窗、Renderer 目标选择接线。权限说明复用既有安装/更新确认界面。
+选择方式、固定目标及其配置由使用这些接口的插件维护；Host 不保存插件的固定目标绑定。
+入口要求 `agent.tasks: true` 与独立的 `agent.targets: true`，后者单列为 `agent:targets` 权限，需 Host receipt 的 `targetCapabilityApproved` 明确批准事实。
+安装/更新确认只授予实际展示的新能力；旧 tasks 批准与历史未知字段不授予 targets。存量插件的原有能力不变，缺独立批准只阻止新接口；首次新接口调用复用既有宿主确认。
+保留 `cindy.tasks` 自有任务边界，不放宽它的 get/list/send，也不改变默认设置卡。
+
+- `list({targetKind})` 返回 `{targets:[{kind,id,label,detail}]}`，仅返回本机可用目标元数据，不返回消息历史。
+  项目使用 Cindy 已有目录分组（id 为目录路径），普通任务和伙伴使用其 ID。最近活动只排序，插件自行展示和选择。
+- `resolve({target:{kind,id}})` 返回最新目标元数据，供插件校验保存的固定目标；无写入、弹窗或隐式选中。
+  `send` 同样重新校验目标，不要求先 list/resolve，也不接受任意不可用路径或目标；失效返回 TARGET_UNAVAILABLE，不降级改投。
+- `send({target,requestKey,text,title?,route?,delivery?,attachments?})` 在指定项目中新建普通任务，或向指定普通任务/伙伴投递。
+  新任务经现有 `PluginTaskService.create` 登记归属后使用 `createPluginTaskSession`，沿用插件模型选择、受限动手权限及卸载撤销流程，可传统一模型目录的 route。
+  存量任务和伙伴保留其模型、权限、目录，不接受 route；伙伴通过唯一 canonical 注册解析，不使用兼容镜像或伪造伙伴身份。
+- 同键并发发送共享同一 Promise。回执复用当前账号 SQLite 的 `plugin_task_requests`，以 `operation=target` 按插件和请求键读写单行；只保存请求摘要、Host 生成的 taskId/clientId、批准修订和状态，
+  不保存正文、图片或插件固定配置。执行前原子预留回执；已接受请求可在重启后返回原结果，尚未确定的回执返回 DELIVERY_UNCERTAIN，
+  不自动重派。幂等键按插件和 requestKey 隔离，不因插件升级或 Host 重启更换身份；同键修改目标、正文、附件或 delivery 返回 REQUEST_KEY_CONFLICT。
+- `delivery` 为 `queue | steer`，缺省 queue（与显式 queue 幂等签名一致）；project 仅接受 queue。
+  queue 走 `sendToSessionInternal` 与既有输入队列；steer 复用 `steerControlInput` 同轮注入，不停止或重启当前轮。
+  空闲、框架不支持或当前输入边界不允许插话时走普通队列，保留 Stop/pause 边界。
+  返回 `{taskId,accepted:true,delivery:'queue'|'steer'}` 表示实际接受路径，不表示 AI 已执行完成。
+- main 盖 sourcePlugin 和 delegated-continuation 来源；入队前及实际受理时复核插件批准与目标。受理通过持久 clientId 查回执，重启恢复后仍检查当前批准修订、取消状态和伙伴 canonical 归属；失效以队列取消信号拦下派发。插话还在异步筛查后及 provider 派发前复核。
+  筛查拒绝返回 DELIVERY_REJECTED，不改走队列；ACK 未知保留宿主保护性暂停队列并返回 DELIVERY_UNCERTAIN，不再次排队。
+  `cancel({requestKey})` 持久使迟到请求失效，只按本插件该请求的 clientId 撤回排队输入，不停止整个会话或撤回已经接受的插话。
+- 仅本机 Desktop，不新增 Mobile/device-link 透传，也不承诺跨平台原生触发。异步请求持续复核原逻辑页、批准 revision 和 owner generation。
+
+此能力供同时声明并获批 `agent.tasks` 与 `agent.targets` 的插件使用；投递沿用目标任务权限，不授予读取历史、修改配置或停止其他任务的权限。
+静态检查与单元测试不等于真实 AI 执行的联调验收，不得把 accepted 当成完成。
+
+### 消息图片附件
+
+`tasks.send` 与 `targets.send` 支持 `attachments?: Array<{base64:string,name?:string}>`。
+插件先核对 `tasks.capabilities().messageAttachments`，无此能力时停止发送截图，不能静默丢图或回退文件路径。
+只接受插件自己提供的字节；不接受 Host 路径、URL、其他会话的媒体 URI 或自报 MIME。
+Host 校验规范 base64，嗅探 PNG/JPEG/WebP，最多 4 张、合计 20 MiB；附件字节指纹和名称参与幂等签名，回执不保存 base64。
+两种发送入口在解码前共用 40 MiB 在途字节额度，持有至请求完成；超额返回可重试的 `TASK_BUSY`，成功、失败及取消均在 `finally` 释放额度，不在 Host 内排队保留超额附件。
+
+`pluginMessageAttachments.ts` 复用 `ingestMedia` 和草稿/排队消息提交链路。入库前同步登记内容地址到现有回收器的活引用集合，
+覆盖去重旧 blob 的入库、取消和派发在途窗口。调用方等待既有持久队列写入或插话落库后释放在途保护；
+之后由内存队列、恢复快照和 `createMessage → commitMessageMediaRefs` 的会话附件引用保护。
+失败或取消且未采用的图片不保留永久引用，由既有零引用缓冲与手动回收处理。无新目录、数据表、媒体协议或 media.deposit 授权。
+
+queue 与 steer 都把托管 URL 写入 files、chatMessage.images 和持久消息信封；模型输入由既有附件装配器生成。
+正文/附件来源仍是插件续行，不把截图变为新用户授权；目标、批准、owner 和取消闸保持不变。

@@ -1,10 +1,11 @@
+import type { PluginMessageAttachment } from './pluginAttachments.js';
 /** Ordinary local Session API. No Bot/Orca identity or permission override is accepted. */
 export interface PluginTaskRoute {
   agentKind: 'cc' | 'codex' | 'pi';
   providerId: string;
   model: string;
   effort: string;
-  fastMode: boolean;
+  fastMode: boolean | 'ultrafast';
 }
 export type PluginTaskRunStatus =
   | 'queued'
@@ -75,7 +76,7 @@ export function isPluginTeamPlanWithinBudget(plan: unknown): boolean {
 }
 export type PluginTaskRequest = (
   | { type: 'tasks-request'; kind: 'capabilities' | 'models' }
-  | { type: 'tasks-request'; kind: 'setModel'; taskId: string; expectedRevision: number; route: PluginTaskRoute }
+  | { type: 'tasks-request'; kind: 'setModel'; taskId: string; expectedRevision: number; route: PluginTaskRoute | 'plugin-default' }
   | {
       type: 'tasks-request';
       kind: 'create';
@@ -103,6 +104,7 @@ export type PluginTaskRequest = (
       requestKey: string;
       expectedRevision: number;
       text: string;
+      attachments?: PluginMessageAttachment[];
     }
   | { type: 'tasks-request'; kind: 'getRun'; runId: string }
   | { type: 'tasks-request'; kind: 'listRuns'; taskId: string; after?: string; limit?: number }

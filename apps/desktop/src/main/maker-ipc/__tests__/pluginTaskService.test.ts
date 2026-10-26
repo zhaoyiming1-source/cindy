@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
+import { createSessionExecutionResolver } from '../sessionExecutionSelection.js';
 import { Session } from '@cindy/maker-core';
+import { fastModeToStorage } from '@cindy/maker-shared';
+import { handlePluginTaskRequest } from '../../cindy-brain/taskSlot.js';
+import { withParsedPluginMessageAttachments } from '../../cindy-media/pluginMessageAttachments.js';
+import { PLUGIN_ATTACHMENT_MAX_BYTES } from '../../../shared/pluginAttachments.js';
+import type { InstalledGhost } from '../../../shared/ghost.js';
 import {
   createPluginTaskService,
   isPluginTaskPermissionAllowed,
@@ -38,7 +44,7 @@ it.each([false,true])('production Auto context checks uninstall after its projec
     const epoch={client:{drizzle:{select:()=>query},queryOne:async()=>({unchanged:1}),tx:async()=>{if(revoked)await f.service.withUninstall('p',async()=>{});return {};}}};
     let load!:(id:string)=>Promise<unknown>;
     const deps={setAutoReviewContextResolver:(callback:typeof load)=>{load=callback;},createPluginTaskReviewResolver:(callback:typeof load)=>callback,
-      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,
+      getCurrentDbClientSnapshot:()=>epoch,sessions:{},orcaWorkers:{},orcaTeams:{},eq:()=>true,fastModeToStorage,
       createPluginTaskStore:()=>f.deps.store,drainPersistQueue:async()=>{},
       pluginTaskServiceForCurrentOwner:()=>f.service,readPluginTaskConfig:()=>({permissionMode:'auto'}),
       readPluginTaskPlanReceipt,pluginTaskAuthorizationRevision:()=> 'new-install',isPluginTaskAuthorized:()=>true};
@@ -119,6 +125,7 @@ function fixture() {
   const deps: PluginTaskServiceDeps = {
     store,
     readPermissionMode: () => 'auto',
+    readModelPreference: () => route,
     assertAuthorized: () => {
       if (!current) throw new Error('Owner changed');
     },
@@ -163,6 +170,83 @@ function fixture() {
     },
   };
 }
+
+// Targets create in a selected project through the same service, not directly through
+// session persistence. Without its create receipt, helper tools and uninstall lose ownership.
+// Minimal regression: a Host-supplied task ID + project, then get and uninstall (unit).
+it('retains task ownership and uninstall revocation for Host-selected project creation', async () => {
+  const f = fixture();
+  const context = { taskId: 'target-project-task', workingDir: '/selected-project', assertCurrent: vi.fn() };
+  const task = await f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, context);
+  expect(task.taskId).toBe(context.taskId);
+  expect(await f.service.get('p', context.taskId)).toMatchObject({ taskId: context.taskId });
+  expect(f.rows.get(context.taskId)).toMatchObject({ operation: 'create', pluginId: 'p' });
+  expect(vi.mocked(f.deps.createSession).mock.calls[0]?.[9]).toBe(context);
+  await f.service.withUninstall('p', async () => {});
+  await expect(f.service.get('p', context.taskId)).rejects.toMatchObject({ code: 'TASK_NOT_FOUND' });
+});
+it('rechecks Host target context after route resolution before persisting a task', async () => {
+  const f = fixture();
+  let current = true;
+  vi.mocked(f.deps.resolveRoute).mockImplementationOnce(async () => { current = false; return f.route; });
+  await expect(f.service.create('p', { requestKey: 'target-create', title: 'Selected project' }, {
+    taskId: 'target-project-task', workingDir: '/selected-project',
+    assertCurrent: () => { if (!current) throw new PluginTaskError('PERMISSION_DENIED', 'Target changed'); },
+  })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+  expect(f.tasks.size).toBe(0);
+  expect(f.rows.size).toBe(0);
+});
+
+it('includes message images in owned-task replay identity without persisting screenshot bytes', async () => {
+  const f = fixture(), task = await f.create();
+  const base64 = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64');
+  const request = { taskId: task.taskId, requestKey: 'image', expectedRevision: task.revision,
+    text: 'context', attachments: [{ base64, name: 'window.png' }] };
+  await f.service.send('p', request);
+  await f.service.send('p', structuredClone(request));
+  expect(f.deps.dispatch).toHaveBeenCalledOnce();
+  expect(vi.mocked(f.deps.dispatch).mock.calls[0]?.[4]?.[0]).toMatchObject({ mimeType: 'image/png' });
+  expect(JSON.stringify([...f.rows.values()])).not.toContain(base64);
+  await expect(f.service.send('p', { ...request, attachments: [{ base64, name: 'other.png' }] }))
+    .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+// Exercise the public pipe with the real service, including its error sanitization.
+it.each(['INVALID_ATTACHMENTS', 'TASK_BUSY'] as const)('preserves %s across the public task boundary', async code => {
+  const f = fixture(), task = await f.create();
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const pending: Promise<unknown>[] = [];
+  try {
+    if (code === 'TASK_BUSY') {
+      const large = Buffer.alloc(PLUGIN_ATTACHMENT_MAX_BYTES);
+      png.copy(large);
+      const attachments = [{ base64: large.toString('base64') }];
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+      pending.push(withParsedPluginMessageAttachments(attachments, () => held));
+    }
+    const ghost = { enabled: true, taskCapabilityApproved: true, approval: { state: 'approved' },
+      manifest: { agent: { tasks: true } } } as InstalledGhost;
+    const result = await handlePluginTaskRequest('p', {
+      type: 'tasks-request', kind: 'send', taskId: task.taskId, requestKey: 'attachment-error',
+      expectedRevision: task.revision, text: 'context',
+      attachments: [{ base64: (code === 'TASK_BUSY' ? png : Buffer.from('not an image')).toString('base64') }],
+    }, {
+      getGhost: () => ghost, isCurrent: () => true,
+      handler: (pluginId, request) => {
+        if (request.kind !== 'send') throw new Error('Unexpected operation');
+        return f.service.send(pluginId, request);
+      },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code, retryable: code === 'TASK_BUSY' } });
+    expect(f.deps.dispatch).not.toHaveBeenCalled();
+    expect([...f.rows.values()].some(row => row.operation === 'send')).toBe(false);
+  } finally {
+    release();
+    await Promise.all(pending);
+  }
+});
 
 describe('plugin dispatch uses live Plan execution authority', () => {
   it.each(['send', 'accept'] as const)('%s rejects consumed Pi intent while execution is active, unknown or switching', async entry => {
@@ -1037,6 +1121,169 @@ it('does not apply a model after the task changes while route admission is pendi
   f.deps.setModel = vi.fn();
   await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route })).rejects.toMatchObject({ code: 'STALE_REVISION' });
   expect(f.deps.setModel).not.toHaveBeenCalled();
+});
+
+it('rechecks plugin defaults for the same task on every request without resetting unchanged tasks', async () => {
+  const f = fixture();
+  let preference = { ...f.route, model: 'grok' };
+  f.deps.readModelPreference = () => preference;
+  f.deps.resolveRoute = vi.fn(async (_plugin, requested) => requested ?? { ...preference });
+  // First install: creation already respects the saved preference.
+  let task = await f.create();
+  expect(task.resolvedConfig.model).toBe('grok');
+  f.deps.setModel = vi.fn(async (id, route, assertCurrent) => {
+    await assertCurrent();
+    const stored = f.tasks.get(id)!;
+    f.tasks.set(id, { ...stored, revision: stored.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  });
+  const sync = async () => {
+    const result = await f.service.setModel('p', {taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default'});
+    task = result.task;
+    return result.status;
+  };
+  expect(await sync()).toBe('unchanged');
+  expect(f.deps.setModel).not.toHaveBeenCalled();
+  for (const model of ['astra', 'grok']) {
+    preference = {...preference, model};
+    expect(await sync()).toBe('applied');
+    const run = await f.service.send('p', {taskId:task.taskId, expectedRevision:task.revision, requestKey:model, text:'translate'});
+    expect(run.acceptedConfig.model).toBe(model);
+  }
+  expect(f.tasks.size).toBe(1);
+  expect(f.deps.setModel).toHaveBeenCalledTimes(2);
+  expect(await sync()).toBe('unchanged');
+  preference = {...preference, effort:'low', fastMode:true, providerId:'other-source'};
+  expect(await sync()).toBe('applied');
+  expect(task.resolvedConfig).toEqual(preference);
+  f.deps.resolveRoute = async () => {throw new PluginTaskError('ROUTE_UNAVAILABLE', 'Unavailable selection');};
+  await expect(sync()).rejects.toMatchObject({code:'ROUTE_UNAVAILABLE'});
+  expect(f.deps.setModel).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  { model: 'new-model' }, { providerId: 'new-provider' },
+  { agentKind: 'pi' as const }, { effort: 'low' }, { fastMode: true },
+])('rejects preferences changed during async route admission: %j', async patch => {
+  const f = fixture(), task = await f.create();
+  const preference = { ...f.route };
+  f.deps.readModelPreference = () => preference;
+  let entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  f.deps.resolveRoute = async () => { const captured = { ...preference }; entered(); await gate; return captured; };
+  f.deps.setModel = vi.fn(async (id, route, assertCurrent) => {
+    await assertCurrent();
+    const stored = f.tasks.get(id)!;
+    f.tasks.set(id, { ...stored, revision: stored.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  });
+  const request = { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' as const };
+  const pending = f.service.setModel('p', request);
+  await started;
+  Object.assign(preference, patch);
+  const rejected = expect(pending).rejects.toMatchObject({ code: 'STALE_REVISION' });
+  finish(); await rejected;
+  expect(f.deps.setModel).not.toHaveBeenCalled();
+  expect((await f.service.get('p', task.taskId)).revision).toBe(task.revision);
+  // No stale input was accepted; retry resolves and applies the newly saved choice.
+  f.deps.resolveRoute = async () => ({ ...preference });
+  const next = await f.service.setModel('p', request);
+  expect(next.task.resolvedConfig).toEqual(preference);
+});
+
+it('rechecks saved preferences at the runtime mutation boundary', async () => {
+  const f = fixture(), task = await f.create();
+  let preference = { ...f.route, model: 'chosen' };
+  f.deps.readModelPreference = () => preference;
+  f.deps.resolveRoute = async () => ({ ...preference });
+  const apply = vi.fn();
+  f.deps.setModel = async (_id, _route, assertCurrent) => {
+    preference = { ...preference, model: 'newer' };
+    await assertCurrent(); apply(); return { status: 'applied' };
+  };
+  await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' }))
+    .rejects.toMatchObject({ code: 'STALE_REVISION' });
+  expect(apply).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['provider', 'reset'], ['provider', 'partial'],
+  ['mutation', 'reset'], ['mutation', 'partial'],
+  ['provider', 'explicit'],
+] as const)('checks inherited defaults through production adapters during %s (%s)', async (phase, mode) => {
+  const f = fixture(), task = await f.create();
+  const config = mode === 'explicit' ? { ...f.route, model: 'next' }
+    : mode === 'partial' ? { effort: 'high' } : {};
+  const selected = { harness: 'codex' as const, model: 'next', providerId: f.route.providerId,
+    effort: 'high' as const, fastMode: false };
+  let entered!: () => void, finish!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  let waited = false;
+  const wait = async (point: string) => {
+    if (phase === point && !waited) { waited = true; entered(); await gate; }
+  };
+  const resolver = createSessionExecutionResolver({
+    captureOwner: () => () => {}, readCaller: async () => { throw Error('unexpected caller'); },
+    readDefault: () => ({ agentKind: selected.harness, model: selected.model,
+      providerId: selected.providerId, effort: selected.effort, fastMode: selected.fastMode }),
+    availableAgents: () => ['codex'],
+    availableModels: () => ['model', 'next', 'latest'].map(id => ({ id, efforts: ['high'] })),
+    hasCindyAiApiKey: () => true,
+    readProviderRouting: async () => {
+      await wait('provider');
+      return { availability: { 'claude-code': [], pi: [],
+        codex: [{ id: f.route.providerId, name: 'provider', models: ['model', 'next', 'latest'] }] },
+        resolveDefaultProviderIdForModel: () => f.route.providerId };
+    },
+  });
+  const source = readFileSync(new URL('../register.ts', import.meta.url), 'utf8');
+  const preferenceStart = source.indexOf('      readModelPreference:');
+  const preference = source.slice(preferenceStart, source.indexOf('      readPermissionMode:', preferenceStart));
+  const resolveStart = source.indexOf('    const resolveRoute = async');
+  const resolve = source.slice(resolveStart, source.indexOf('    const readExecution', resolveStart));
+  const deps = { readPluginTaskConfig: () => config, getSelectedNewMakerRoute: () => selected,
+    activeOwnerScopeKey: () => 'owner', assertPlugin: () => {}, getPluginTaskSourceSessionId: () => undefined,
+    resolveSessionExecution: resolver, PluginTaskError, routeUnavailable: () => { throw Error('unavailable'); } };
+  const js = ts.transpileModule(`${resolve}\nreturn {${preference} resolveRoute};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const adapter = new Function(...Object.keys(deps), js)(...Object.values(deps));
+  f.deps.readModelPreference = adapter.readModelPreference;
+  f.deps.resolveRoute = adapter.resolveRoute;
+  const write = vi.fn();
+  f.deps.setModel = async (id, route, assertCurrent) => {
+    await wait('mutation');
+    await assertCurrent();
+    write(route);
+    f.tasks.set(id, { ...f.tasks.get(id)!, revision: task.revision + 1, resolvedConfig: route });
+    return { status: 'applied' };
+  };
+  const request = { taskId: task.taskId, expectedRevision: task.revision, route: 'plugin-default' as const };
+  const result = f.service.setModel('p', request);
+  const assertion = mode === 'explicit'
+    ? expect(result).resolves.toMatchObject({ status: 'applied', task: { resolvedConfig: { model: 'next' } } })
+    : expect(result).rejects.toMatchObject({ code: 'STALE_REVISION' });
+  await started;
+  selected.model = 'latest';
+  finish();
+  await assertion;
+  if (mode !== 'explicit') {
+    expect(write).not.toHaveBeenCalled();
+    expect((await f.service.get('p', task.taskId)).revision).toBe(task.revision);
+    const retry = await f.service.setModel('p', request);
+    expect(retry.task.resolvedConfig.model).toBe('latest');
+    expect(write).toHaveBeenCalledOnce();
+  }
+});
+
+it('does not reject explicit routes when unrelated plugin preferences change', async () => {
+  const f = fixture(), task = await f.create();
+  f.deps.readModelPreference = () => { throw Error('Explicit route must not read preferences'); };
+  f.deps.setModel = vi.fn(async (_id, _route, assertCurrent) => { await assertCurrent(); return { status: 'applied' }; });
+  await expect(f.service.setModel('p', { taskId: task.taskId, expectedRevision: task.revision, route: f.route }))
+    .resolves.toMatchObject({ status: 'applied' });
 });
 
 it('keeps taskless plans immutable instead of retroactively granting scope', async () => {

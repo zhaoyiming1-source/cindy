@@ -45,9 +45,32 @@ afterEach(() => {
 });
 
 const names = (query: string) =>
-  renderHook(() => useTeammateSearchMatches(query)).result.current.map((match) => match.name);
+  renderHook(() => useTeammateSearchMatches(query, null)).result.current.map((match) => match.name);
 
 describe('teammates in the sidebar-wide search', () => {
+  // Issue #6575 P1: task-ID filtering did not constrain the leading roster hits.
+  // Existing global-query tests never lock a dialogue group. Unit regression:
+  // one matching local bot, remote bot and group must disappear while locked,
+  // then become navigable again after unlocking through the real hook/results.
+  // Standalone: 3.02s including pnpm (Vitest 1.18s), no module resets.
+  it('excludes teammates and group chats while search is locked to a dialogue group', () => {
+    mocks.profiles = [bot('local', 'Needle local')];
+    mocks.remoteBots = [{ id: 'remote', deviceId: 'mac', deviceName: 'Mac', name: 'Needle remote', description: '' }];
+    mocks.groups = [{ id: 'group', name: 'Needle group', members: [] }];
+    function Results({ groupName }: { groupName: string | null }) {
+      const matches = useTeammateSearchMatches('needle', groupName);
+      return <TeammateSearchResults matches={matches} />;
+    }
+    const view = render(<Results groupName="Chat" />);
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    view.rerender(<Results groupName={null} />);
+    expect(screen.getAllByRole('button')).toHaveLength(3);
+    fireEvent.click(screen.getByRole('button', { name: /Needle remote/ }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/remote/mac/remote');
+    view.rerender(<Results groupName="Chat" />);
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+
   it('matches nothing for an empty query', () => {
     expect(names('  ')).toEqual([]);
   });
@@ -65,7 +88,7 @@ describe('teammates in the sidebar-wide search', () => {
     ];
     expect(names('旅行')).toEqual(['已完成的旅行']);
     expect(names('  PLANNER  ')).toEqual(['已完成的旅行']);
-    const matches = renderHook(() => useTeammateSearchMatches('旅行')).result.current;
+    const matches = renderHook(() => useTeammateSearchMatches('旅行', null)).result.current;
     render(<TeammateSearchResults matches={matches} />);
     expect(screen.getByText('bots.archived')).toBeTruthy();
     fireEvent.click(screen.getByText('已完成的旅行'));
@@ -77,6 +100,17 @@ describe('teammates in the sidebar-wide search', () => {
     expect(names('周报')).toEqual([]);
   });
 
+  it('finds dissolved history by group or member name and opens its read-only chat route', () => {
+    mocks.groups = [{ id: 'dissolved', name: '周末出游', archived: true,
+      dissolvedAt: '2026-10-15T12:00:00Z', members: [{ botId: 'lead', name: 'Trip Planner' }] }];
+    expect(names('planner')).toEqual(['周末出游']);
+    const matches = renderHook(() => useTeammateSearchMatches('出游', null)).result.current;
+    render(<TeammateSearchResults matches={matches} />);
+    fireEvent.click(screen.getByRole('button', { name: /周末出游/ }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/bots/groups/dissolved');
+    expect(screen.queryByRole('menuitem')).toBeNull();
+  });
+
   it('finds remote teammates by their computer and group chats by member names', () => {
     expect(names('mac mini')).toEqual(['Cloud helper']);
     expect(names('出游')).toEqual(['周末出游']);
@@ -85,7 +119,7 @@ describe('teammates in the sidebar-wide search', () => {
 
   it('opens the chosen chat and lets the popover close itself', () => {
     const onSelected = vi.fn();
-    const { result } = renderHook(() => useTeammateSearchMatches('e'));
+    const { result } = renderHook(() => useTeammateSearchMatches('e', null));
     render(<TeammateSearchResults matches={result.current} onSelected={onSelected} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Cloud helper/ }));
@@ -96,7 +130,7 @@ describe('teammates in the sidebar-wide search', () => {
   });
 
   it('labels group chats apart from teammates', () => {
-    const { result } = renderHook(() => useTeammateSearchMatches('出游'));
+    const { result } = renderHook(() => useTeammateSearchMatches('出游', null));
     render(<TeammateSearchResults matches={result.current} />);
     fireEvent.click(screen.getByRole('button', { name: /周末出游/ }));
     expect(mocks.navigate).toHaveBeenLastCalledWith('/bots/groups/trip');

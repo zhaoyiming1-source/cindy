@@ -500,6 +500,21 @@ describe('maker:event hot path ordering', () => {
     );
   });
 
+  it('wakes queued input only for runtime self-closes, not direct product closes', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    // 'unexpected' only means no Maker reason was recorded; IM /new and archive
+    // sync close sessions directly and must not resurrect the old task's queue.
+    expect(closedBlock).toContain(
+      "wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),",
+    );
+    expectOrder(
+      closedBlock,
+      'wakeQueuedInput:',
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
+    );
+  });
+
   it('preserves coordinator input boundary inside the rehydrate suppression window (#1930)', () => {
     const closedBlock = extractSessionCloseAdaptersSource();
 
@@ -862,16 +877,15 @@ describe('maker:event hot path ordering', () => {
     expect(wireSessionSource).toContain(
       'if (!wasInTurn) advanceSessionTurnBoundaryGeneration(session.id);',
     );
-    expectOrder(
-      closedBlock,
-      'const closedDirectAbortBoundary = getDirectAbortBoundaryForClosingSession(',
-      'cancelDirectAbortReconciliation(session.id);',
+    // Cross-file race wiring guard: the imported close adapter must retain the
+    // real abort/persist stores. Its execution order and captured Goal outcome
+    // are exercised through the lifecycle in sessionBindingLifecycle.test.ts.
+    expect(closedBlock).toMatch(
+      /beforeCloseTeardown:\s*createSessionCloseTeardown<WiredSession>\(\{/,
     );
-    expect(closedBlock).toContain('cancelDirectAbortReconciliation(session.id);');
-    expectOrder(
-      closedBlock,
-      'cancelDirectAbortReconciliation(session.id);',
-      'pendingFailedTurnAssistantPersistId.delete(session.id);',
+    expect(closedBlock).toMatch(/\bcancelDirectAbortReconciliation\s*,/);
+    expect(closedBlock).toMatch(
+      /clearPendingFailedTurnPersist:\s*sessionId\s*=>\s*\{\s*pendingFailedTurnAssistantPersistId\.delete\(sessionId\);\s*\}/,
     );
     expect(closedBlock).toContain('sessionTurnBoundaryGenerationById.delete(session.id);');
     expectOrder(
