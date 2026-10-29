@@ -9178,6 +9178,8 @@
   },
   "update": {
     "banner": {
+      "personalRestarting": "正在準備重新啟動…",
+      "personalBusyDescription": "更新控制器正忙，請稍後再試。目前的應用程式仍在執行。",
       "personalPreparationFailed": "較新版本 {{latestVersion}} 準備失敗，仍可安裝已準備好的 {{version}}。",
       "personalFailureTitle": "暫時無法完成更新",
       "personalFailureDescription": "目前的應用程式與待安裝套件已保留。請重試；如果仍然失敗，請查看個人版更新狀態。",

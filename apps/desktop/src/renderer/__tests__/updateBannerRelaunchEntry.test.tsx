@@ -28,6 +28,7 @@ const {
       status: string;
       version?: string;
       errorCode: string | null;
+      relaunching?: boolean;
       preparationError?: boolean;
       latestVersion?: string;
     },
@@ -633,4 +634,15 @@ describe('personal update fallback', () => {
     expect(screen.getByText('update.banner.personalPreparationFailed')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'update.banner.ariaExpanded' })).toBeTruthy();
   });
+});
+
+// A slow controller handshake used to leave a clickable Restart button with no feedback.
+it.each([false, true])('shows a disabled restart indicator while preparing (collapsed=%s)', (collapsed) => {
+  updateStatus.current = { status: 'ready', version: '1.2.3', errorCode: null, relaunching: true };
+  render(<UpdateBanner isCollapsed={collapsed} />);
+  const button = screen.getByRole('button', { name: 'update.banner.personalRestarting' });
+  expect((button as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(button);
+  expect(relaunchToUpdate).not.toHaveBeenCalled();
+  expect(anyActivityBlockingRelaunch).not.toHaveBeenCalled();
 });

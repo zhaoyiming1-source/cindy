@@ -113,6 +113,7 @@ interface UpdateStatusPayload {
   errorCode?: string;
   latestVersion?: string;
   generation?: string;
+  relaunching?: boolean;
   preparationError?: boolean;
   discoveryError?: boolean;
 }
@@ -2321,6 +2322,7 @@ export function initUpdateService(): void {
       runtimeVersion: app.getVersion(), platform: process.platform,
       packaged: app.isPackaged, development: isDev(), emit: broadcastStatus,
       quit: () => { noteExpectedExit('update-relaunch'); app.quit(); }, warn: (message) => log.warn(message),
+      info: (message) => log.info(message),
     }, local.root);
   }
 

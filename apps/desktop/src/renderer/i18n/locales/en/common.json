@@ -9210,6 +9210,8 @@
   },
   "update": {
     "banner": {
+      "personalRestarting": "Preparing to restart…",
+      "personalBusyDescription": "The updater is busy. Please try again shortly. The current app is still running.",
       "personalPreparationFailed": "Version {{latestVersion}} could not be prepared. You can still install the ready version {{version}}.",
       "personalFailureTitle": "Update could not be completed",
       "personalFailureDescription": "The current app and prepared update have been kept. Try again; if it still fails, check the personal updater status.",

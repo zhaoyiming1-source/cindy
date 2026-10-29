@@ -9178,6 +9178,8 @@
   },
   "update": {
     "banner": {
+      "personalRestarting": "재시작 준비 중…",
+      "personalBusyDescription": "업데이트 관리자가 사용 중입니다. 잠시 후 다시 시도하세요. 현재 앱은 계속 실행 중입니다.",
       "personalPreparationFailed": "버전 {{latestVersion}} 준비에 실패했습니다. 준비된 {{version}} 버전은 계속 설치할 수 있습니다.",
       "personalFailureTitle": "업데이트를 완료할 수 없습니다",
       "personalFailureDescription": "현재 앱과 준비된 업데이트는 유지됩니다. 다시 시도하세요. 계속 실패하면 개인 버전의 업데이트 상태를 확인하세요.",

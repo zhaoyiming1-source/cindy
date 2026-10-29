@@ -27,7 +27,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, 'Cindy.app', 'Contents', 'Resources'), { recursive: true });
   fs.mkdirSync(path.join(root, 'state'));
   context = { resources: path.join(root, 'Cindy.app', 'Contents', 'Resources'), appPath: path.join(root, 'Cindy.app'),
-    runtimeVersion: '0.0.0', packaged: true, development: false, platform: 'darwin', emit: vi.fn(), quit: vi.fn(), warn: vi.fn() };
+    runtimeVersion: '0.0.0', packaged: true, development: false, platform: 'darwin', emit: vi.fn(), quit: vi.fn(), warn: vi.fn(), info: vi.fn() };
   write('Cindy.app/Contents/Resources/cindy-personal-build.json', metadata());
   write('Cindy.app/Contents/Resources/cindy-source.json', { sourceCommit: sha });
   write('config.json', { region: 'cn', bundleId: 'com.xd.cindycn', installTarget: context.appPath });
@@ -66,7 +66,7 @@ describe('personal update lifecycle', () => {
     const adapter = make(); await adapter.refresh();
     expect(adapter.snapshot()).toMatchObject({ status: 'ready', version: '0.1.115' });
     mocks.exec.mockImplementation((_f, _a, _o, callback) => callback(new Error('/private/credential')));
-    await adapter.refresh(); expect(adapter.snapshot()).toEqual({ status: 'error', errorCode: 'personal_updater_unavailable' });
+    await adapter.refresh(); expect(adapter.snapshot()).toEqual({ status: 'error', errorCode: 'personal_updater_unavailable', relaunching: false });
   });
   it('quits only after installer handshake and coalesces duplicate clicks', async () => {
     const adapter = make(); await adapter.refresh();
@@ -78,6 +78,29 @@ describe('personal update lifecycle', () => {
     expect(context.quit).toHaveBeenCalledTimes(1);
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
     expect(mocks.spawn.mock.calls[0][1]).toContain('apply-and-relaunch');
+    expect(adapter.snapshot().relaunching).toBe(true);
+    await adapter.relaunch();
+    expect(context.quit).toHaveBeenCalledTimes(1);
+  });
+  it('publishes preparation immediately, preserves it through refresh, and reports lock contention', async () => {
+    const adapter = make(); await adapter.refresh();
+    let complete!: (error: Error | null, output: string) => void;
+    const original = mocks.exec.getMockImplementation()!;
+    mocks.exec.mockImplementation((file, args, options, callback) => {
+      if (args.includes('prepare-restart')) complete = callback;
+      else original(file, args, options, callback);
+    });
+    const first = adapter.relaunch();
+    expect(adapter.snapshot()).toMatchObject({ status: 'ready', relaunching: true });
+    await adapter.refresh();
+    expect(adapter.snapshot().relaunching).toBe(true);
+    await adapter.relaunch();
+    expect(mocks.exec.mock.calls.filter((call) => call[1].includes('prepare-restart'))).toHaveLength(1);
+    complete(null, JSON.stringify({ status: 'busy' }));
+    await first;
+    expect(adapter.snapshot()).toMatchObject({ status: 'error', errorCode: 'personal_install_busy', relaunching: false });
+    expect(context.quit).not.toHaveBeenCalled();
+    expect(context.info).toHaveBeenCalledWith(expect.stringContaining('duplicate-ignored'));
   });
   it('rejects stale response and keeps app running', async () => {
     const adapter = make(); await adapter.refresh();
@@ -89,11 +112,12 @@ describe('personal update lifecycle', () => {
     const adapter = make(); await adapter.refresh(); await adapter.relaunch();
     expect(mocks.spawn).not.toHaveBeenCalled(); expect(context.quit).not.toHaveBeenCalled();
   });
-  it('failed installer start or invalid ack never quits', async () => {
+  it.each([['wrong', 'personal_install_failed'], ['busy', 'personal_install_busy']])('installer ack %s never quits', async (reply, expectedError) => {
     const adapter = make(); await adapter.refresh(); const restart = adapter.relaunch();
     await new Promise(resolve => setImmediate(resolve));
-    worker.stdout.write('{"status":"wrong"}\n'); await restart;
-    expect(context.quit).not.toHaveBeenCalled(); expect(adapter.snapshot().errorCode).toBe('personal_install_failed');
+    worker.stdout.write(JSON.stringify({ status: reply }) + '\n'); await restart;
+    expect(context.quit).not.toHaveBeenCalled(); expect(adapter.snapshot().errorCode).toBe(expectedError);
+    expect(adapter.snapshot().relaunching).toBe(false);
   });
 });
 

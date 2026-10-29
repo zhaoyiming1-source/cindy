@@ -80,7 +80,7 @@ const UPDATE_BUTTON_TREATMENT =
   '[--button-face-bg:var(--update-btn-bg)] [--button-face-border:var(--update-btn-border)] text-[var(--update-btn-text)] enabled:hover:[--button-face-bg:var(--update-btn-hover)] enabled:hover:[--button-face-border:var(--update-btn-border)] enabled:active:[--button-face-bg:var(--update-btn-hover)] enabled:active:[--button-face-border:var(--update-btn-border)]';
 
 export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerProps) {
-  const { status, version, errorCode, preparationError, latestVersion } = useUpdateStatus();
+  const { status, version, errorCode, preparationError, latestVersion, relaunching } = useUpdateStatus();
   const { effectiveLocale } = useLocale();
   // 用户主动关闭态(仅本次进程内存,由 UserInfoSection 的火焰按钮唤回)。
   // 新一版更新到达时 useDeferUpdateBannerWhileBusy 会清掉上一版的决定并重新探针。
@@ -90,10 +90,9 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   const [confirming, setConfirming] = useState(false);
   // 只有全部类别都读出来才替换通用警告。null = 沿用原来那句。
   const [activitySummary, setActivitySummary] = useState<RelaunchActivitySummary | null>(null);
-  // 入口点击的 busy 探针在飞标记 —— 防重入。探针是一次 IPC round trip(毫秒级),所以
-  // 刻意不给 loading UI(几毫秒的 spinner 只会闪一下),只用 ref 挡住连点导致的
-  // 重复探针 / 重复重启。与 WindowControls 的关窗入口保持同样的「无 loading 态」处理。
+  // Activity checks and installer preparation show immediate feedback and reject repeat clicks.
   const relaunchProbeRef = useRef(false);
+  const [probing, setProbing] = useState(false);
   // 一次点击的有效性令牌。探针是异步的,点击那一刻成立的前提在 resolve 时可能已经不成立:
   // 用户点了右上角「稍后再说」、新版本把已就绪补丁顶成 superseding、组件被卸载,或用户
   // 又点了一次入口。任一情况都让 epoch 前进,在飞的 continuation 靠 epoch 不匹配自我作废。
@@ -137,7 +136,8 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
     status === 'ready' && errorCode === 'windows_vc_runtime_missing';
   const isLinuxInstallationUnsupported =
     status === 'ready' && errorCode === 'linux_installation_unsupported';
-  const isPreparing = status === 'superseding';
+  const isRestarting = Boolean(relaunching) || (probing && status === 'ready');
+  const isPreparing = status === 'superseding' || isRestarting;
 
   useEffect(() => {
     if (isLinuxInstallationUnsupported) setShowLinuxInstallationDialog(true);
@@ -232,8 +232,8 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // 绑在 isRail 上,rail 分支只渲染头像、没有火焰;展开态本组件在 hideExpandedBanner
   // 时 return null,只留头像行那颗。busy 时若把折叠火焰也藏掉,rail 会完全没入口。
   const hideExpandedBanner =
-    hideUntilBusyDecision
-    || (dismissed && (status === 'ready' || isPreparing));
+    !isRestarting && (hideUntilBusyDecision
+    || (dismissed && (status === 'ready' || isPreparing)));
 
   const handleRelaunch = () => {
     // Main may emit exactly the same prerequisite error again. Keep the
@@ -279,8 +279,9 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   };
 
   const probeBeforeRelaunch = async (): Promise<void> => {
-    if (relaunchProbeRef.current) return;
+    if (relaunchProbeRef.current || relaunching) return;
     relaunchProbeRef.current = true;
+    setProbing(true);
     const epoch = relaunchEpochRef.current;
     // 初值取 true:探针没给出可信答案的任何路径(reject、桥同步 throw、形状不对)都落在保守的那一侧。
     // 是否确认只看 busy 布尔。不能把返回对象当成 true,否则 busy 为 false 的对象也会被拦下。
@@ -307,6 +308,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
       summary = null;
     } finally {
       relaunchProbeRef.current = false;
+      setProbing(false);
     }
     // 这次点击是否仍然有效(未被 dismiss / 卸载 / status 离开 ready 作废)。
     if (epoch !== relaunchEpochRef.current) return;
@@ -354,7 +356,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
   // 可信版本号,confirming 态则刻意让位给两步确认。hasNotes 已经蕴含「ready + 该版本
   // 公告可渲染」,这里再显式列出条件,读代码时不必回溯 effect。
   const notesVersion =
-    status === 'ready' && !confirming && hasNotes && version ? version : undefined;
+    status === 'ready' && !isRestarting && !confirming && hasNotes && version ? version : undefined;
 
   const versionSuffix = version ? ` (v${version})` : '';
   const versionForAria = version ?? 'latest';
@@ -371,7 +373,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
         open={showPersonalFailure}
         onOpenChange={setShowPersonalFailure}
         title={t('update.banner.personalFailureTitle')}
-        description={t('update.banner.personalFailureDescription')}
+        description={t(errorCode === 'personal_install_busy' ? 'update.banner.personalBusyDescription' : 'update.banner.personalFailureDescription')}
         confirmText={t('update.banner.personalRetry')}
         onConfirm={() => { setShowPersonalFailure(false); void window.electronAPI.checkForUpdate(); }}
       />
@@ -504,7 +506,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
       <div className="flex flex-col items-center border-t border-sidebar-border">
         <Tip
           text={isPreparing
-            ? t('update.banner.preparingTooltip')
+            ? t(isRestarting ? 'update.banner.personalRestarting' : 'update.banner.preparingTooltip')
             : t('update.banner.tooltipReady', { versionSuffix })}
           side="right"
         >
@@ -513,7 +515,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
             onClick={() => { if (!isPreparing) void handleRelaunchClick(); }}
             disabled={isPreparing}
             aria-label={isPreparing
-              ? t('update.banner.preparingAria')
+              ? t(isRestarting ? 'update.banner.personalRestarting' : 'update.banner.preparingAria')
               : t('update.banner.ariaCollapsed', { version: versionForAria })}
             className={cn(
               'flex w-full items-center justify-center py-2',
@@ -544,6 +546,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
         <Tip text={t('update.banner.dismiss')} side="left">
           <button
             onClick={handleDismiss}
+            disabled={Boolean(relaunching)}
             aria-label={t('update.banner.dismissAria')}
             className={cn(
               'absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full',
@@ -563,7 +566,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
         {/* Title */}
         <p className="text-sm font-semibold text-foreground">
           {isPreparing
-            ? t('update.banner.preparingTitle')
+            ? isRestarting ? t('update.banner.title', { version: version ?? '…' }) : t('update.banner.preparingTitle')
             : confirming
               ? t('update.banner.confirmTitle')
               : t('update.banner.title', { version: version ?? '…' })}
@@ -583,7 +586,7 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
             )}
           >
             {isPreparing
-              ? t('update.banner.preparingSubtitle')
+              ? t(isRestarting ? 'update.banner.personalRestarting' : 'update.banner.preparingSubtitle')
               : confirming
                 ? (formatRelaunchActivityHint((key, vars) => t(key, vars), activitySummary) ?? t('update.banner.confirmBusyHint'))
                 : t('update.banner.subtitle')}
@@ -616,10 +619,10 @@ export function UpdateBanner({ isCollapsed, onOpenVersionNotice }: UpdateBannerP
             compact
             loading={true}
             disabled
-            aria-label={t('update.banner.preparingAria')}
+            aria-label={t(isRestarting ? 'update.banner.personalRestarting' : 'update.banner.preparingAria')}
             className={cn('w-full', UPDATE_BUTTON_TREATMENT)}
           >
-            {t('update.banner.preparingButton')}
+            {t(isRestarting ? 'update.banner.personalRestarting' : 'update.banner.preparingButton')}
           </Button>
         ) : confirming ? (
           <div className="flex w-full flex-col gap-2">

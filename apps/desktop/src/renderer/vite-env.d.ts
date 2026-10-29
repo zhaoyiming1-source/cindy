@@ -951,6 +951,7 @@ interface UpdateStatusPayload {
   status: 'idle' | 'checking' | 'downloading' | 'ready' | 'superseding' | 'error';
   version?: string;
   latestVersion?: string;
+  relaunching?: boolean;
   preparationError?: boolean;
   discoveryError?: boolean;
   progress?: number;

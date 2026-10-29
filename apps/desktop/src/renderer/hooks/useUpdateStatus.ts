@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 export function useUpdateStatus() {
   const [status, setStatus] = useState<UpdateStatusPayload['status']>('idle');
   const [version, setVersion] = useState<string | undefined>();
+  const [relaunching, setRelaunching] = useState(false);
   const [preparationError, setPreparationError] = useState(false);
   const [latestVersion, setLatestVersion] = useState<string | undefined>();
   const [errorCode, setErrorCode] = useState<string | undefined>();
@@ -22,15 +23,19 @@ export function useUpdateStatus() {
     const api = window.electronAPI;
     if (!api?.getUpdateStatus || !api.onUpdateStatus) return undefined;
     // Query initial status — catches 'ready' set before this hook mounted
-    api.getUpdateStatus().then((initial) => {
-      if (initial && typeof initial.status === 'string') {
-        setStatus(initial.status as UpdateStatusPayload['status']);
-        if (initial.version) setVersion(initial.version);
-        setErrorCode(initial.errorCode);
-        setPreparationError(Boolean(initial.preparationError));
-        setLatestVersion(initial.latestVersion);
-      }
-    }).catch(() => {});
+    api
+      .getUpdateStatus()
+      .then((initial) => {
+        if (initial && typeof initial.status === 'string') {
+          setStatus(initial.status as UpdateStatusPayload['status']);
+          if (initial.version) setVersion(initial.version);
+          setErrorCode(initial.errorCode);
+          setRelaunching(Boolean(initial.relaunching));
+          setPreparationError(Boolean(initial.preparationError));
+          setLatestVersion(initial.latestVersion);
+        }
+      })
+      .catch(() => {});
 
     // Subscribe to future status changes
     const unsubscribe = api.onUpdateStatus((payload) => {
@@ -40,6 +45,7 @@ export function useUpdateStatus() {
           setVersion(payload.version);
         }
         setErrorCode(payload.errorCode);
+        setRelaunching(Boolean(payload.relaunching));
         setPreparationError(Boolean(payload.preparationError));
         setLatestVersion(payload.latestVersion);
         setProgress(typeof payload.progress === 'number' ? payload.progress : undefined);
@@ -49,5 +55,5 @@ export function useUpdateStatus() {
     return unsubscribe;
   }, []);
 
-  return { status, version, errorCode, progress, preparationError, latestVersion };
+  return { status, version, errorCode, progress, preparationError, latestVersion, relaunching };
 }
