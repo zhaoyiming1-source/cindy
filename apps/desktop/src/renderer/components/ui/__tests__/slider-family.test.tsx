@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Slider } from '../slider';
 import { MediaScrubber } from '../media-scrubber';
@@ -104,6 +104,51 @@ describe('Slider family behavior', () => {
     pointer(document, 'pointerup', 100);
     expect(change).toHaveBeenCalledExactlyOnceWith('high');
   });
+  it('holds the released stop while an existing task saves asynchronously', async () => {
+    let resolve!: (accepted: boolean) => void;
+    const onChange = vi.fn(() => new Promise<boolean>((done) => { resolve = done; }));
+    const props = { stops: ['low', 'medium', 'high'] as const, value: 'low' as const, labelOf: String, onChange };
+    const { rerender } = render(<EffortSlider {...props} />);
+    const slider = screen.getByRole('slider');
+    slider.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
+    pointer(slider, 'pointerdown', 100);
+    pointer(document, 'pointerup', 100);
+    expect(slider.getAttribute('aria-valuetext')).toBe('high');
+    rerender(<EffortSlider {...props} />); // unrelated task update still carries old effort
+    expect(slider.getAttribute('aria-valuetext')).toBe('high');
+    await act(async () => { resolve(true); });
+    expect(slider.getAttribute('aria-valuetext')).toBe('high'); // wait for authoritative echo
+    rerender(<EffortSlider {...props} value="high" />);
+    rerender(<EffortSlider {...props} value="medium" />);
+    expect(slider.getAttribute('aria-valuetext')).toBe('medium');
+  });
+
+  it('keeps the latest choice through an older echo and rolls back only the latest failure', async () => {
+    const settle: ((accepted: boolean) => void)[] = [];
+    const props = { stops: ['low', 'medium', 'high'] as const, value: 'low' as const, labelOf: String,
+      onChange: () => new Promise<boolean>((done) => { settle.push(done); }) };
+    const { rerender } = render(<EffortSlider {...props} />);
+    const slider = screen.getByRole('slider');
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    rerender(<EffortSlider {...props} value="medium" />);
+    expect(slider.getAttribute('aria-valuetext')).toBe('high');
+    await act(async () => { settle[0]!(false); });
+    expect(slider.getAttribute('aria-valuetext')).toBe('high');
+    await act(async () => { settle[1]!(false); });
+    expect(slider.getAttribute('aria-valuetext')).toBe('medium');
+  });
+
+  it('discards pending feedback when switching task scope', () => {
+    const props = { stops: ['low', 'high'] as const, value: 'low' as const, labelOf: String,
+      onChange: () => new Promise<boolean>(() => {}) };
+    const { rerender } = render(<EffortSlider {...props} scopeKey="task-a" />);
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'End' });
+    expect(screen.getByRole('slider').getAttribute('aria-valuetext')).toBe('high');
+    rerender(<EffortSlider {...props} scopeKey="task-b" />);
+    expect(screen.getByRole('slider').getAttribute('aria-valuetext')).toBe('low');
+  });
+
   it.each(['pointercancel', 'blur', 'disable', 'stops'])(
     'cancels effort when %s occurs',
     (cause) => {

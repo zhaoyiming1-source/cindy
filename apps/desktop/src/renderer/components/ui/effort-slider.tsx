@@ -35,6 +35,7 @@ export function EffortSlider({
   labelOf,
   onChange,
   disabled = false,
+  scopeKey,
 }: {
   /** 该 (模型, 引擎) 支持的档位,低 → 高。长度必须 ≥2。 */
   stops: readonly Effort[];
@@ -44,7 +45,9 @@ export function EffortSlider({
   recommended?: Effort | null;
   /** 档位 → 显示文案(i18n,绝不入库)。 */
   labelOf: (effort: Effort) => string;
-  onChange: (effort: Effort) => void;
+  onChange: (effort: Effort) => void | boolean | Promise<void | boolean>;
+  /** Selection scope; pending feedback must not leak into another task/model. */
+  scopeKey?: string;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -55,16 +58,25 @@ export function EffortSlider({
   const draggingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
 
+  const revisionRef = useRef(0);
+  const [pending, setPending] = useState<{ effort: Effort; scope: string } | null>(null);
+  const selectionScope = `${scopeKey ?? ''}:${stops.join(',')}`;
+  const pendingCurrent = pending?.scope === selectionScope && pending.effort !== value;
+  const displayValue = pendingCurrent ? pending.effort : value;
+  useEffect(() => {
+    if (pending && !pendingCurrent) setPending(null);
+  }, [pending, pendingCurrent]);
+
   const stopsKey = stops.join(',');
   useEffect(() => {
     setDragging(false);
     draggingRef.current = false;
     pointerIdRef.current = null;
     setDragPos(null);
-  }, [stopsKey]);
+  }, [stopsKey, selectionScope]);
 
   const lastIndex = Math.max(0, stops.length - 1);
-  const valueIndex = Math.max(0, value ? stops.indexOf(value) : -1);
+  const valueIndex = Math.max(0, displayValue ? stops.indexOf(displayValue) : -1);
   const activeIndex = dragPos === null ? valueIndex : Math.round(dragPos);
   const activeStop = stops[Math.min(lastIndex, Math.max(0, activeIndex))] ?? stops[0];
   const position = dragPos ?? valueIndex;
@@ -84,9 +96,22 @@ export function EffortSlider({
   const commit = useCallback(
     (index: number) => {
       const next = stops[Math.min(lastIndex, Math.max(0, index))];
-      if (next && next !== value) onChange(next);
+      if (!next || next === displayValue) return;
+      const revision = ++revisionRef.current;
+      setPending({ effort: next, scope: selectionScope });
+      const rollback = () => {
+        if (revision === revisionRef.current) setPending(null);
+      };
+      try {
+        const result = onChange(next);
+        if (result && typeof result === 'object' && 'then' in result) {
+          void result.then((accepted) => { if (accepted === false) rollback(); }, rollback);
+        } else if (result === false) rollback();
+      } catch {
+        rollback();
+      }
     },
-    [lastIndex, onChange, stops, value],
+    [displayValue, lastIndex, onChange, selectionScope, stops, value],
   );
 
   // pointerup 挂在 document 上:拖出滑杆范围松手也要收尾,否则 dragging 态卡住、

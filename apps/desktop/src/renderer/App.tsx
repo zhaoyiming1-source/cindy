@@ -13,6 +13,7 @@ import { WallpaperSettingsProvider } from '@/hooks/useWallpaperSettings';
 import { FontSettingsProvider } from '@/hooks/useFontSettings';
 import { LocaleProvider } from '@/hooks/useLocale';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { PluginReviewUpdatesProvider } from '@/contexts/PluginReviewUpdatesContext';
 import { AppShellCoverProvider, useAppShellCover } from '@/contexts/AppShellCoverContext';
 import { LoginHandoffProvider } from '@/contexts/LoginHandoffContext';
 import { EnvCheckProvider, EnvCheckGuard } from '@/contexts/EnvCheckContext';
@@ -32,6 +33,7 @@ import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 import { FindInPageBar } from '@/components/find-in-page/FindInPageBar';
 import { ProjectAutomationNotifyBridge } from '@/features/scheduler/components/ProjectAutomationNotifyBridge';
 import { GhostConfirmDialogHost } from '@/cindy-brain/GhostConfirmDialogHost';
+import { LocalAgentConfirmationHost } from '@/components/LocalAgentConfirmationHost';
 import { ForgeOidcInstallConfirmHost } from '@/cindy-brain/ForgeOidcInstallConfirmHost';
 import { GhostInstallConsentHost } from '@/cindy-brain/GhostInstallConsentHost';
 import { PluginPublisherConfirmHost } from '@/features/plugin/PluginPublisherConfirmHost';
@@ -437,6 +439,7 @@ export function App() {
             <ConfirmDialogProvider>
               <EnvCheckProvider>
                 <AuthProvider>
+                  <PluginReviewUpdatesProvider>
                   <AppShellCoverProvider>
                     <WorktreeProvider>
                       <PrRefsProvider>
@@ -460,6 +463,7 @@ export function App() {
                               内(要 useConfirmDialog);main 只投单个窗口,所以每个窗口
                               都挂、谁收到谁弹,不按窗口类型 gate。 */}
                               <GhostConfirmDialogHost />
+                              <LocalAgentConfirmationHost />
                               <ForgeOidcInstallConfirmHost />
                               <GhostInstallConsentHost />
                               <PluginPublisherConfirmHost />
@@ -475,6 +479,7 @@ export function App() {
                       </PrRefsProvider>
                     </WorktreeProvider>
                   </AppShellCoverProvider>
+                  </PluginReviewUpdatesProvider>
                 </AuthProvider>
               </EnvCheckProvider>
             </ConfirmDialogProvider>
