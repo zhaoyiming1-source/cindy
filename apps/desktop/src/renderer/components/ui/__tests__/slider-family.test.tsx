@@ -48,19 +48,30 @@ describe('Slider family behavior', () => {
     fireEvent.keyDown(thumb, { key: 'Home' });
     expect(commit).toHaveBeenLastCalledWith([0]);
   });
-  it.each(['pointercancel', 'lostpointercapture', 'blur'])('restores numeric preview without committing on %s', (cause) => {
-    const change = vi.fn(), commit = vi.fn();
-    render(<Slider defaultValue={[50]} onValueChange={change} onValueCommit={commit} aria-label="Brightness" />);
-    const root = screen.getByRole('slider').closest('.cindy-slider')!;
-    root.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
-    pointer(root, 'pointerdown', 80);
-    expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('80');
-    if (cause === 'blur') fireEvent(window, new Event('blur'));
-    else pointer(root, cause, 80);
-    expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('50');
-    expect(root.hasAttribute('data-pressed')).toBe(false);
-    expect(commit).not.toHaveBeenCalled();
-  });
+  it.each(['pointercancel', 'lostpointercapture', 'blur'])(
+    'restores numeric preview without committing on %s',
+    (cause) => {
+      const change = vi.fn(),
+        commit = vi.fn();
+      render(
+        <Slider
+          defaultValue={[50]}
+          onValueChange={change}
+          onValueCommit={commit}
+          aria-label="Brightness"
+        />,
+      );
+      const root = screen.getByRole('slider').closest('.cindy-slider')!;
+      root.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
+      pointer(root, 'pointerdown', 80);
+      expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('80');
+      if (cause === 'blur') fireEvent(window, new Event('blur'));
+      else pointer(root, cause, 80);
+      expect(screen.getByRole('slider').getAttribute('aria-valuenow')).toBe('50');
+      expect(root.hasAttribute('data-pressed')).toBe(false);
+      expect(commit).not.toHaveBeenCalled();
+    },
+  );
   it('seeks in seconds and preserves a fractional end time', () => {
     const seek = vi.fn();
     render(<MediaScrubber currentTime={12} duration={37.25} onSeek={seek} label="Playback" />);
@@ -97,26 +108,38 @@ describe('Slider family behavior', () => {
     const slider = screen.getByRole('slider');
     slider.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
     pointer(slider, 'pointerdown', 20);
-    pointer(document, 'pointermove', 75);
+    pointer(slider, 'pointermove', 75);
     expect(change).not.toHaveBeenCalled();
-    pointer(document, 'pointerup', 0, 2);
+    pointer(slider, 'pointerup', 0, 2);
     expect(change).not.toHaveBeenCalled();
-    pointer(document, 'pointerup', 100);
+    pointer(slider, 'pointerup', 100);
     expect(change).toHaveBeenCalledExactlyOnceWith('high');
   });
   it('holds the released stop while an existing task saves asynchronously', async () => {
     let resolve!: (accepted: boolean) => void;
-    const onChange = vi.fn(() => new Promise<boolean>((done) => { resolve = done; }));
-    const props = { stops: ['low', 'medium', 'high'] as const, value: 'low' as const, labelOf: String, onChange };
+    const onChange = vi.fn(
+      () =>
+        new Promise<boolean>((done) => {
+          resolve = done;
+        }),
+    );
+    const props = {
+      stops: ['low', 'medium', 'high'] as const,
+      value: 'low' as const,
+      labelOf: String,
+      onChange,
+    };
     const { rerender } = render(<EffortSlider {...props} />);
     const slider = screen.getByRole('slider');
     slider.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
     pointer(slider, 'pointerdown', 100);
-    pointer(document, 'pointerup', 100);
+    pointer(slider, 'pointerup', 100);
     expect(slider.getAttribute('aria-valuetext')).toBe('high');
     rerender(<EffortSlider {...props} />); // unrelated task update still carries old effort
     expect(slider.getAttribute('aria-valuetext')).toBe('high');
-    await act(async () => { resolve(true); });
+    await act(async () => {
+      resolve(true);
+    });
     expect(slider.getAttribute('aria-valuetext')).toBe('high'); // wait for authoritative echo
     rerender(<EffortSlider {...props} value="high" />);
     rerender(<EffortSlider {...props} value="medium" />);
@@ -125,23 +148,38 @@ describe('Slider family behavior', () => {
 
   it('keeps the latest choice through an older echo and rolls back only the latest failure', async () => {
     const settle: ((accepted: boolean) => void)[] = [];
-    const props = { stops: ['low', 'medium', 'high'] as const, value: 'low' as const, labelOf: String,
-      onChange: () => new Promise<boolean>((done) => { settle.push(done); }) };
+    const props = {
+      stops: ['low', 'medium', 'high'] as const,
+      value: 'low' as const,
+      labelOf: String,
+      onChange: () =>
+        new Promise<boolean>((done) => {
+          settle.push(done);
+        }),
+    };
     const { rerender } = render(<EffortSlider {...props} />);
     const slider = screen.getByRole('slider');
     fireEvent.keyDown(slider, { key: 'ArrowRight' });
     fireEvent.keyDown(slider, { key: 'ArrowRight' });
     rerender(<EffortSlider {...props} value="medium" />);
     expect(slider.getAttribute('aria-valuetext')).toBe('high');
-    await act(async () => { settle[0]!(false); });
+    await act(async () => {
+      settle[0]!(false);
+    });
     expect(slider.getAttribute('aria-valuetext')).toBe('high');
-    await act(async () => { settle[1]!(false); });
+    await act(async () => {
+      settle[1]!(false);
+    });
     expect(slider.getAttribute('aria-valuetext')).toBe('medium');
   });
 
   it('discards pending feedback when switching task scope', () => {
-    const props = { stops: ['low', 'high'] as const, value: 'low' as const, labelOf: String,
-      onChange: () => new Promise<boolean>(() => {}) };
+    const props = {
+      stops: ['low', 'high'] as const,
+      value: 'low' as const,
+      labelOf: String,
+      onChange: () => new Promise<boolean>(() => {}),
+    };
     const { rerender } = render(<EffortSlider {...props} scopeKey="task-a" />);
     fireEvent.keyDown(screen.getByRole('slider'), { key: 'End' });
     expect(screen.getByRole('slider').getAttribute('aria-valuetext')).toBe('high');
@@ -149,7 +187,7 @@ describe('Slider family behavior', () => {
     expect(screen.getByRole('slider').getAttribute('aria-valuetext')).toBe('low');
   });
 
-  it.each(['pointercancel', 'blur', 'disable', 'stops'])(
+  it.each(['pointercancel', 'lostpointercapture', 'blur', 'disable', 'stops'])(
     'cancels effort when %s occurs',
     (cause) => {
       const change = vi.fn();
@@ -163,12 +201,12 @@ describe('Slider family behavior', () => {
       const slider = screen.getByRole('slider');
       slider.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
       pointer(slider, 'pointerdown', 100);
-      if (cause === 'pointercancel') pointer(document, cause, 100);
+      if (cause === 'pointercancel' || cause === 'lostpointercapture') pointer(slider, cause, 100);
       if (cause === 'blur') fireEvent(window, new Event('blur'));
       if (cause === 'disable') rerender(<EffortSlider {...props} disabled />);
       if (cause === 'stops')
         rerender(<EffortSlider {...props} stops={['low', 'medium', 'high']} />);
-      pointer(document, 'pointerup', 100);
+      pointer(slider, 'pointerup', 100);
       expect(change).not.toHaveBeenCalled();
       expect(slider.hasAttribute('data-dragging')).toBe(false);
     },

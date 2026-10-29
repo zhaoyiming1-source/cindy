@@ -1967,8 +1967,8 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 - Numeric: 6px track, 36px transparent hit height; thumb 16×16 → hover 18×18 → pressed 22×16.
 - Media: 4px track, 28px hit height; thumb 10×10 → hover 12×12 → pressed 14×10.
 - Effort: retain tier-colored 21×21 thumb, 2.5px panel-colored border and 4px same-color 22% halo;
-  hover 23×23, pressed 27×21. Preserve absolute tier colors, continuous drag and release-to-commit.
-- Geometry changes actual width/height with full pill radius, never elliptical scale. Hit regions
+  fixed 21×21 geometry across hover/press (personal build smoothness revision, 2026-10-29). Preserve absolute tier colors, continuous drag and release-to-commit.
+- Numeric/media geometry changes actual width/height with full pill radius, never elliptical scale. Effort uses a shared position for thumb/fill transforms, direct tracking while captured and one synchronized snap on release. Hit regions
   stay fixed. Geometry uses motion-fast/ease-out; position follows the pointer immediately;
   reduced motion suppresses deformation and transitions. Enabled pointer cursor is ew-resize.
 - Numeric/media thumbs have no normal border and use slider-thumb-shadow: Light

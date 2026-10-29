@@ -1,33 +1,29 @@
 import {
-  useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent,
+  type PointerEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-
 import './slider.css';
-
 import { cn } from '@/lib/utils';
 import type { Effort } from '@/lib/userPreferences.types';
 import { effortTierColor, effortTierColorAt } from '@/themes/effortTierColors';
 
-/**
- * EffortSlider —— 配置浮层里的**推理强度滑杆**(model-selector-unified §1.3)。
- *
- * 三条行为契约(设计稿 v4 定稿,实现时逐条对齐):
- *   1. **档位绝对色**:条色 / 滑块色按档位 key 取绝对值(themes/effortTierColors),不按
- *      「第几档」相对取 —— 封顶 high 的模型拉满也是蓝,紫只属于真正的顶档。
- *   2. **单色条 + 连续过渡**:条本身永远是单色(不画渐变);拖动中滑块 1:1 跟手,条色按
- *      连续档位坐标在相邻档色之间插值 —— 渐变发生在**时间**上,不是画在条上。
- *   3. **点击跳档 = 扫过动画**:松手 / 点击时恢复 CSS 过渡,宽度与颜色一起扫到目标档。
- *      拖动期间移除过渡(否则跟手会被过渡拖成橡皮筋)。
- *
- * 只渲染**该 (模型, 引擎) 真实支持**的档位;调用方在 ≤1 档时根本不该挂载本组件
- * (一个档位的滑杆是假控件,规格「不可调时不显示滑杆」)。
- */
+type Gesture = {
+  id: number;
+  scope: string;
+  left: number;
+  width: number;
+  offset: number;
+  position: number;
+  frame: number | null;
+  target: HTMLDivElement;
+};
+
+/** One continuous visual position while captured; snap and commit once on release. */
 export function EffortSlider({
   stops,
   value,
@@ -37,155 +33,170 @@ export function EffortSlider({
   disabled = false,
   scopeKey,
 }: {
-  /** 该 (模型, 引擎) 支持的档位,低 → 高。长度必须 ≥2。 */
   stops: readonly Effort[];
-  /** 当前生效档位;不在 stops 里时回落到首档位置(调用方通常已收敛过)。 */
   value: Effort | null;
-  /** 推荐档(目录 defaultEffort);气泡里标注「推荐」。 */
   recommended?: Effort | null;
-  /** 档位 → 显示文案(i18n,绝不入库)。 */
   labelOf: (effort: Effort) => string;
   onChange: (effort: Effort) => void | boolean | Promise<void | boolean>;
-  /** Selection scope; pending feedback must not leak into another task/model. */
   scopeKey?: string;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const trackRef = useRef<HTMLDivElement>(null);
-  // 拖动中的连续坐标(0..n-1)。null = 未拖动,一切按 value 渲染。
-  const [dragPos, setDragPos] = useState<number | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const draggingRef = useRef(false);
-  const pointerIdRef = useRef<number | null>(null);
-
+  const gestureRef = useRef<Gesture | null>(null);
   const revisionRef = useRef(0);
   const [pending, setPending] = useState<{ effort: Effort; scope: string } | null>(null);
+  const [preview, setPreview] = useState<{ index: number; scope: string } | null>(null);
   const selectionScope = `${scopeKey ?? ''}:${stops.join(',')}`;
+  const lastIndex = Math.max(0, stops.length - 1);
   const pendingCurrent = pending?.scope === selectionScope && pending.effort !== value;
   const displayValue = pendingCurrent ? pending.effort : value;
+  const valueIndex = Math.max(0, displayValue ? stops.indexOf(displayValue) : -1);
+  const activeIndex = preview?.scope === selectionScope ? preview.index : valueIndex;
+  const activeStop = stops[activeIndex] ?? stops[0];
+  const dragging = preview?.scope === selectionScope;
+
   useEffect(() => {
     if (pending && !pendingCurrent) setPending(null);
   }, [pending, pendingCurrent]);
 
-  const stopsKey = stops.join(',');
-  useEffect(() => {
-    setDragging(false);
-    draggingRef.current = false;
-    pointerIdRef.current = null;
-    setDragPos(null);
-  }, [stopsKey, selectionScope]);
-
-  const lastIndex = Math.max(0, stops.length - 1);
-  const valueIndex = Math.max(0, displayValue ? stops.indexOf(displayValue) : -1);
-  const activeIndex = dragPos === null ? valueIndex : Math.round(dragPos);
-  const activeStop = stops[Math.min(lastIndex, Math.max(0, activeIndex))] ?? stops[0];
-  const position = dragPos ?? valueIndex;
-  const percent = lastIndex > 0 ? (position / lastIndex) * 100 : 0;
-  const color = dragPos === null ? effortTierColor(activeStop) : effortTierColorAt(stops, dragPos);
-
-  const positionFromEvent = useCallback(
-    (clientX: number): number => {
-      const rect = trackRef.current?.getBoundingClientRect();
-      if (!rect || rect.width === 0) return valueIndex;
-      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-      return ratio * lastIndex;
-    },
-    [lastIndex, valueIndex],
-  );
-
-  const commit = useCallback(
-    (index: number) => {
-      const next = stops[Math.min(lastIndex, Math.max(0, index))];
-      if (!next || next === displayValue) return;
-      const revision = ++revisionRef.current;
-      setPending({ effort: next, scope: selectionScope });
-      const rollback = () => {
-        if (revision === revisionRef.current) setPending(null);
-      };
-      try {
-        const result = onChange(next);
-        if (result && typeof result === 'object' && 'then' in result) {
-          void result.then((accepted) => { if (accepted === false) rollback(); }, rollback);
-        } else if (result === false) rollback();
-      } catch {
-        rollback();
-      }
-    },
-    [displayValue, lastIndex, onChange, selectionScope, stops, value],
-  );
-
-  // pointerup 挂在 document 上:拖出滑杆范围松手也要收尾,否则 dragging 态卡住、
-  // 条色停在插值中间(既不是任何一档的颜色,也不再跟手)。
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (event: PointerEvent) => {
-      if (event.pointerId !== pointerIdRef.current || disabled) return;
-      draggingRef.current = true;
-      setDragPos(positionFromEvent(event.clientX));
-    };
-    const onUp = (event: PointerEvent) => {
-      if (event.pointerId !== pointerIdRef.current) return;
-      const index = Math.round(positionFromEvent(event.clientX));
-      setDragging(false);
-      draggingRef.current = false;
-      // 先落值再清连续坐标:清早了会先闪回旧档再跳到新档。
-      if (!disabled) commit(index);
-      setDragPos(null);
-    };
-    const onCancel = (event?: PointerEvent | Event) => {
-      if (event && 'pointerId' in event && event.pointerId !== pointerIdRef.current) return;
-      setDragging(false);
-      draggingRef.current = false;
-      setDragPos(null);
-    };
-    if (disabled) onCancel();
-    window.addEventListener('blur', onCancel);
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
-    document.addEventListener('pointercancel', onCancel);
-    return () => {
-      window.removeEventListener('blur', onCancel);
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      document.removeEventListener('pointercancel', onCancel);
-    };
-  }, [commit, disabled, dragging, positionFromEvent]);
-
-  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (disabled || event.button !== 0 || event.isPrimary === false) return;
-    pointerIdRef.current = event.pointerId;
-    event.currentTarget.focus();
-    event.preventDefault();
-    setDragging(true);
-    draggingRef.current = false;
-    // 按下只预览最近档，松手提交最终档位。提前提交会把一次拖动拆成两笔写入，
-    // 慢回执时可能只落下起点，或被后完成的旧请求覆盖终点。
-    setDragPos(Math.round(positionFromEvent(event.clientX)));
+  // Pixel updates stay local to the two transforms. React only updates at stop boundaries.
+  const paint = (position: number) => {
+    const track = trackRef.current;
+    if (!track) return;
+    track.style.setProperty('--effort-position', String(lastIndex ? position / lastIndex : 0));
+    track.style.setProperty('--effort-color', effortTierColorAt(stops, position));
   };
+  const showPreview = (position: number) => {
+    const index = Math.round(position);
+    setPreview((previous) =>
+      previous?.index === index && previous.scope === selectionScope
+        ? previous
+        : { index, scope: selectionScope },
+    );
+  };
+  const release = () => {
+    const gesture = gestureRef.current;
+    if (!gesture) return;
+    gestureRef.current = null;
+    if (gesture.frame !== null) cancelAnimationFrame(gesture.frame);
+    gesture.target.removeAttribute('data-dragging');
+    if (gesture.target.hasPointerCapture(gesture.id))
+      gesture.target.releasePointerCapture(gesture.id);
+  };
+  const cancel = () => {
+    release();
+    setPreview(null);
+  };
+  const cancelRef = useRef(cancel);
+  useLayoutEffect(() => {
+    cancelRef.current = cancel;
+    const gesture = gestureRef.current;
+    if (gesture && (disabled || gesture.scope !== selectionScope)) cancel();
+    if (!gestureRef.current) paint(valueIndex);
+  });
+  useEffect(() => {
+    const cancelCurrent = () => cancelRef.current();
+    window.addEventListener('blur', cancelCurrent);
+    window.addEventListener('resize', cancelCurrent);
+    return () => {
+      window.removeEventListener('blur', cancelCurrent);
+      window.removeEventListener('resize', cancelCurrent);
+      const gesture = gestureRef.current;
+      if (gesture?.frame != null) cancelAnimationFrame(gesture.frame);
+      gestureRef.current = null;
+    };
+  }, []);
 
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const commit = (index: number) => {
+    const next = stops[index];
+    if (!next || next === displayValue) return;
+    const revision = ++revisionRef.current;
+    setPending({ effort: next, scope: selectionScope });
+    const rollback = () => {
+      if (revision === revisionRef.current) setPending(null);
+    };
+    try {
+      const result = onChange(next);
+      if (result && typeof result === 'object' && 'then' in result) {
+        void result.then((accepted) => {
+          if (accepted === false) rollback();
+        }, rollback);
+      } else if (result === false) rollback();
+    } catch {
+      rollback();
+    }
+  };
+  const positionAt = (gesture: Gesture, clientX: number) =>
+    Math.min(1, Math.max(0, (clientX - gesture.left - gesture.offset) / gesture.width)) * lastIndex;
+
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (disabled || event.button !== 0 || event.isPrimary === false || gestureRef.current) return;
+    const target = event.currentTarget;
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const thumb = (event.target as Element).closest('[data-effort-thumb]');
+    const thumbRect = thumb?.getBoundingClientRect();
+    const offset = thumbRect ? event.clientX - (thumbRect.left + thumbRect.width / 2) : 0;
+    const gesture: Gesture = {
+      id: event.pointerId,
+      scope: selectionScope,
+      left: rect.left,
+      width: rect.width,
+      offset,
+      position: 0,
+      frame: null,
+      target,
+    };
+    gesture.position = positionAt(gesture, event.clientX);
+    gestureRef.current = gesture;
+    target.focus();
+    event.preventDefault();
+    target.setPointerCapture(event.pointerId);
+    target.setAttribute('data-dragging', '');
+    paint(gesture.position);
+    showPreview(gesture.position);
+  };
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.id !== event.pointerId || disabled) return;
+    gesture.position = positionAt(gesture, event.clientX);
+    if (gesture.frame !== null) return;
+    gesture.frame = requestAnimationFrame(() => {
+      gesture.frame = null;
+      if (gestureRef.current !== gesture) return;
+      paint(gesture.position);
+      showPreview(gesture.position);
+    });
+  };
+  const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const index = Math.round(positionAt(gesture, event.clientX));
+    release();
+    if (!disabled) commit(index);
+    setPreview(null);
+  };
+  const onPointerCancel = (event: PointerEvent<HTMLDivElement>) => {
+    if (gestureRef.current?.id === event.pointerId) cancel();
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
-    const delta =
-      event.key === 'ArrowRight' || event.key === 'ArrowUp'
-        ? 1
-        : event.key === 'ArrowLeft' || event.key === 'ArrowDown'
-          ? -1
-          : event.key === 'Home'
-            ? -lastIndex
-            : event.key === 'End'
-              ? lastIndex
-              : 0;
-    if (delta === 0) return;
+    const index =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? lastIndex
+          : event.key === 'ArrowRight' || event.key === 'ArrowUp'
+            ? valueIndex + 1
+            : event.key === 'ArrowLeft' || event.key === 'ArrowDown'
+              ? valueIndex - 1
+              : null;
+    if (index === null) return;
     event.preventDefault();
     event.stopPropagation();
-    commit(Math.min(lastIndex, Math.max(0, valueIndex + delta)));
+    commit(Math.min(lastIndex, Math.max(0, index)));
   };
-
-  const live = dragging && draggingRef.current;
-  const transition = live
-    ? 'none'
-    : 'left var(--motion-base) var(--motion-ease-out), width var(--motion-fast) var(--motion-ease-out), background-color var(--motion-base) var(--motion-ease-out)';
-
   return (
     <div
       className={cn('group/effort relative min-w-0 flex-1 pl-1.5 pr-2.5', disabled && 'opacity-50')}
@@ -193,7 +204,6 @@ export function EffortSlider({
       <div
         ref={trackRef}
         role="slider"
-        data-dragging={dragging || undefined}
         tabIndex={disabled ? -1 : 0}
         aria-label={t('newChat.modelSelector.effortLabel')}
         aria-valuemin={0}
@@ -202,6 +212,10 @@ export function EffortSlider({
         aria-valuetext={activeStop ? labelOf(activeStop) : undefined}
         aria-disabled={disabled}
         onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onLostPointerCapture={onPointerCancel}
         onKeyDown={onKeyDown}
         className={cn(
           'cindy-effort-slider relative flex h-[38px] touch-none items-center',
@@ -211,8 +225,7 @@ export function EffortSlider({
         <div className="absolute inset-x-0 h-3 rounded-full bg-[var(--slider-track)]" />
         <div
           data-effort-fill
-          className="absolute left-0 z-[1] h-3 rounded-full"
-          style={{ width: `${percent}%`, backgroundColor: color, transition }}
+          className="cindy-effort-fill absolute left-0 z-[1] h-3 w-full rounded-full"
         />
         {stops.map((stop, index) =>
           index === 0 || index === lastIndex ? null : (
@@ -229,37 +242,31 @@ export function EffortSlider({
             />
           ),
         )}
-        <div
-          data-effort-thumb
-          className={cn(
-            'absolute z-[3] -translate-x-1/2 rounded-full border-[2.5px] border-[var(--model-dropdown-bg)]',
-          )}
-          style={{
-            left: `${percent}%`,
-            backgroundColor: color,
-            // 设计稿的滑块「描边环」:2.5px 面板底色描边 + 4px 同色 22% 外晕。
-            // 外晕是滑块在深浅两种轨道色上都能被一眼找到的原因,不是装饰。
-            boxShadow: `0 0 0 4px color-mix(in srgb, ${color} 22%, transparent)`,
-            transition: `${live ? '' : 'left var(--motion-base) var(--motion-ease-out), background-color var(--motion-base) var(--motion-ease-out), '}width var(--motion-fast) var(--motion-ease-out), height var(--motion-fast) var(--motion-ease-out), box-shadow var(--motion-fast) var(--motion-ease-out)`,
-          }}
-        >
+        <div className="cindy-effort-position absolute inset-0 z-[3] pointer-events-none">
           <div
-            className={cn(
-              'pointer-events-none absolute bottom-[calc(100%-2px)] left-1/2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-[7px] px-2.5 py-1',
-              'bg-[var(--tooltip-bg)] text-11 text-[var(--tooltip-text)] opacity-0 transition-opacity duration-100',
-              'group-hover/effort:opacity-100',
-              dragging && 'opacity-100',
-            )}
+            data-effort-thumb
+            className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-[2.5px] border-[var(--model-dropdown-bg)] pointer-events-auto"
           >
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: effortTierColor(activeStop) }}
-            />
-            <span>{activeStop ? labelOf(activeStop) : ''}</span>
-            {recommended && activeStop === recommended && (
-              <span className="opacity-70">· {t('newChat.modelSelector.unified.recommended')}</span>
-            )}
+            <div
+              className={cn(
+                'pointer-events-none absolute bottom-[calc(100%-2px)] left-1/2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-[7px] px-2.5 py-1',
+                'bg-[var(--tooltip-bg)] text-11 text-[var(--tooltip-text)] opacity-0 transition-opacity duration-100',
+                'group-hover/effort:opacity-100',
+                dragging && 'opacity-100',
+              )}
+            >
+              <span
+                aria-hidden
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: effortTierColor(activeStop) }}
+              />
+              <span>{activeStop ? labelOf(activeStop) : ''}</span>
+              {recommended && activeStop === recommended && (
+                <span className="opacity-70">
+                  · {t('newChat.modelSelector.unified.recommended')}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
