@@ -14,6 +14,8 @@ import { effortTierColor, effortTierColorAt } from '@/themes/effortTierColors';
 
 type Gesture = {
   id: number;
+  phase: 'pressed' | 'dragging';
+  startX: number;
   scope: string;
   left: number;
   width: number;
@@ -140,6 +142,8 @@ export function EffortSlider({
     const offset = thumbRect ? event.clientX - (thumbRect.left + thumbRect.width / 2) : 0;
     const gesture: Gesture = {
       id: event.pointerId,
+      phase: thumb ? 'dragging' : 'pressed',
+      startX: event.clientX,
       scope: selectionScope,
       left: rect.left,
       width: rect.width,
@@ -153,13 +157,23 @@ export function EffortSlider({
     target.focus();
     event.preventDefault();
     target.setPointerCapture(event.pointerId);
-    target.setAttribute('data-dragging', '');
-    paint(gesture.position);
-    showPreview(gesture.position);
+    // Track presses wait for release: a click animates directly to its stop.
+    // Grabbing the thumb tracks immediately, preserving even one-pixel drags.
+    if (gesture.phase === 'dragging') {
+      target.setAttribute('data-dragging', '');
+      paint(gesture.position);
+      showPreview(gesture.position);
+    }
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const gesture = gestureRef.current;
     if (!gesture || gesture.id !== event.pointerId || disabled) return;
+    if (gesture.phase === 'pressed') {
+      // client coordinates and DOM geometry are both CSS pixels, independent of Retina DPR.
+      if (Math.abs(event.clientX - gesture.startX) < 3) return;
+      gesture.phase = 'dragging';
+      gesture.target.setAttribute('data-dragging', '');
+    }
     gesture.position = positionAt(gesture, event.clientX);
     if (gesture.frame !== null) return;
     gesture.frame = requestAnimationFrame(() => {

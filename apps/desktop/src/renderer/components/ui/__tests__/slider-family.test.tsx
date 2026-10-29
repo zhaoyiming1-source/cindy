@@ -115,6 +115,26 @@ describe('Slider family behavior', () => {
     pointer(slider, 'pointerup', 100);
     expect(change).toHaveBeenCalledExactlyOnceWith('high');
   });
+  it('keeps track presses still until release and ignores click jitter', () => {
+    const change = vi.fn();
+    render(
+      <EffortSlider
+        stops={['low', 'medium', 'high']}
+        value="low"
+        labelOf={String}
+        onChange={change}
+      />,
+    );
+    const slider = screen.getByRole('slider');
+    slider.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
+    pointer(slider, 'pointerdown', 58);
+    pointer(slider, 'pointermove', 59);
+    expect(slider.getAttribute('aria-valuetext')).toBe('low');
+    expect(slider.hasAttribute('data-dragging')).toBe(false);
+    pointer(slider, 'pointerup', 59);
+    expect(change).toHaveBeenCalledExactlyOnceWith('medium');
+  });
+
   it('holds the released stop while an existing task saves asynchronously', async () => {
     let resolve!: (accepted: boolean) => void;
     const onChange = vi.fn(
